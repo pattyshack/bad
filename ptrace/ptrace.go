@@ -12,10 +12,17 @@ import (
 type requestType string
 
 const (
-	start  = requestType("start")
-	attach = requestType("attach")
-	detach = requestType("detach")
-	resume = requestType("resume")
+	start      = requestType("start")
+	attach     = requestType("attach")
+	detach     = requestType("detach")
+	resume     = requestType("resume")
+	setoptions = requestType("setoptions")
+	getregs    = requestType("getregs")
+	setregs    = requestType("setregs")
+	getfpregs  = requestType("getfpregs")
+	setfpregs  = requestType("setfpregs")
+	peekuser   = requestType("peekuser")
+	pokeuser   = requestType("pokeuser")
 )
 
 type request struct {
@@ -23,13 +30,23 @@ type request struct {
 
 	cmd *exec.Cmd
 
-	signal int // used by PtraceCont
+	signal int // resume
+
+	options int // set options
+
+	regs *UserRegs // get/set regs
+
+	fpRegs *UserFPRegs // get/set fp regs
+
+	offset uintptr // peek/poke user area
+	data   uintptr // poke user area
 
 	responseChan chan response
 }
 
 type response struct {
-	err error
+	data uintptr
+	err  error
 }
 
 // This ensures ptrace calls to a process are goroutine-safe.
@@ -166,6 +183,92 @@ func (tracer *Tracer) processRequests() {
 			req.responseChan <- response{
 				err: err,
 			}
+		case setoptions:
+			err := syscall.PtraceSetOptions(pid, req.options)
+			if err != nil {
+				err = fmt.Errorf("failed to set options for process %d: %w", pid, err)
+			}
+
+			req.responseChan <- response{
+				err: err,
+			}
+		case getregs:
+			err := syscall.PtraceGetRegs(pid, req.regs)
+			if err != nil {
+				err = fmt.Errorf(
+					"failed to get general register values from process %d: %w",
+					pid,
+					err)
+			}
+
+			req.responseChan <- response{
+				err: err,
+			}
+		case setregs:
+			err := syscall.PtraceSetRegs(pid, req.regs)
+			if err != nil {
+				err = fmt.Errorf(
+					"failed to set general register values for process %d: %w",
+					pid,
+					err)
+			}
+
+			req.responseChan <- response{
+				err: err,
+			}
+		case getfpregs:
+			err := getFPRegs(pid, req.fpRegs)
+			if err != nil {
+				err = fmt.Errorf(
+					"failed to get floating point register values from process %d: %w",
+					pid,
+					err)
+			}
+
+			req.responseChan <- response{
+				err: err,
+			}
+		case setfpregs:
+			err := setFPRegs(pid, req.fpRegs)
+			if err != nil {
+				err = fmt.Errorf(
+					"failed to set floating point register values from process %d: %w",
+					pid,
+					err)
+			}
+
+			req.responseChan <- response{
+				err: err,
+			}
+		case peekuser:
+			data, err := peekUserArea(pid, req.offset)
+
+			resp := response{}
+			if err == nil {
+				resp.data = data
+			} else {
+				resp.err = fmt.Errorf(
+					"failed to peek user area (%d) for process %d: %w",
+					req.offset,
+					pid,
+					err)
+			}
+
+			req.responseChan <- resp
+		case pokeuser:
+			err := pokeUserArea(pid, req.offset, req.data)
+			if err != nil {
+				err = fmt.Errorf(
+					"failed to poke user area (%d ; %d) for process %d: %w",
+					req.offset,
+					req.data,
+					pid,
+					err)
+			}
+
+			req.responseChan <- response{
+				err: err,
+			}
 		}
 	}
 }
@@ -185,16 +288,78 @@ func (tracer *Tracer) send(req request) (response, error) {
 	}
 }
 
-func (tracer *Tracer) DetachFromProcess() error {
+func (tracer *Tracer) Detach() error {
 	_, err := tracer.send(request{
 		requestType: detach,
 	})
 	return err
 }
 
-func (tracer *Tracer) ResumeProcess(signal int) error {
+func (tracer *Tracer) Resume(signal int) error {
 	_, err := tracer.send(request{
 		requestType: resume,
+		signal:      signal,
 	})
+	return err
+}
+
+func (tracer *Tracer) SetOptions(options int) error {
+	_, err := tracer.send(request{
+		requestType: setoptions,
+		options:     options,
+	})
+	return err
+}
+
+func (tracer *Tracer) GetGeneralRegisters() (*UserRegs, error) {
+	out := &UserRegs{}
+	_, err := tracer.send(request{
+		requestType: getregs,
+		regs:        out,
+	})
+	return out, err
+}
+
+func (tracer *Tracer) SetGeneralRegisters(in *UserRegs) error {
+	_, err := tracer.send(request{
+		requestType: setregs,
+		regs:        in,
+	})
+	return err
+}
+
+func (tracer *Tracer) GetFloatingPointRegisters() (*UserFPRegs, error) {
+	out := &UserFPRegs{}
+	_, err := tracer.send(request{
+		requestType: getfpregs,
+		fpRegs:      out,
+	})
+	return out, err
+}
+
+func (tracer *Tracer) SetFloatingPointRegisters(in *UserFPRegs) error {
+	_, err := tracer.send(request{
+		requestType: setfpregs,
+		fpRegs:      in,
+	})
+	return err
+}
+
+func (tracer *Tracer) PeekUserArea(offset uintptr) (uintptr, error) {
+	resp, err := tracer.send(request{
+		requestType: peekuser,
+		offset:      offset,
+	})
+
+	return resp.data, err
+}
+
+func (tracer *Tracer) PokeUserArea(offset uintptr, data uintptr) error {
+	_, err := tracer.send(request{
+		requestType: pokeuser,
+		offset:      offset,
+		data:        data,
+	})
+
 	return err
 }

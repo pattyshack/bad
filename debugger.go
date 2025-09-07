@@ -4,9 +4,14 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"reflect"
 	"syscall"
 
 	"github.com/pattyshack/bad/ptrace"
+)
+
+var (
+	userDebugRegistersOffset = uintptr(0) // initialized by init()
 )
 
 func printWaitStatus(pid int, status syscall.WaitStatus) {
@@ -48,7 +53,7 @@ type Debugger struct {
 	Pid         int
 	ownsProcess bool
 
-	state ProcessState
+	processState ProcessState
 }
 
 func AttachToProcess(pid int) (*Debugger, error) {
@@ -58,15 +63,15 @@ func AttachToProcess(pid int) (*Debugger, error) {
 	}
 
 	db := &Debugger{
-		tracer:      tracer,
-		Pid:         tracer.Pid(),
-		ownsProcess: false,
-		state:       Stopped,
+		tracer:       tracer,
+		Pid:          tracer.Pid(),
+		ownsProcess:  false,
+		processState: Stopped,
 	}
 
 	_, err = db.WaitForProcessSignal()
 	if err != nil {
-		_ = tracer.DetachFromProcess()
+		_ = tracer.Detach()
 		return nil, err
 	}
 
@@ -84,15 +89,15 @@ func StartAndAttachToProcess(name string, args ...string) (*Debugger, error) {
 	}
 
 	db := &Debugger{
-		tracer:      tracer,
-		Pid:         tracer.Pid(),
-		ownsProcess: true,
-		state:       Stopped,
+		tracer:       tracer,
+		Pid:          tracer.Pid(),
+		ownsProcess:  true,
+		processState: Stopped,
 	}
 
 	_, err = db.WaitForProcessSignal()
 	if err != nil {
-		_ = tracer.DetachFromProcess()
+		_ = tracer.Detach()
 		return nil, err
 	}
 
@@ -100,12 +105,12 @@ func StartAndAttachToProcess(name string, args ...string) (*Debugger, error) {
 }
 
 func (db *Debugger) ResumeProcess(signal int) error {
-	err := db.tracer.ResumeProcess(signal)
+	err := db.tracer.Resume(signal)
 	if err != nil {
 		return err
 	}
 
-	db.state = Running
+	db.processState = Running
 
 	fmt.Println("process", db.Pid, "running")
 	return nil
@@ -120,16 +125,25 @@ func (db *Debugger) WaitForProcessSignal() (syscall.WaitStatus, error) {
 	}
 
 	if status.Exited() {
-		db.state = Exited
+		db.processState = Exited
 	} else if status.Signaled() {
-		db.state = Terminated
+		db.processState = Terminated
 	} else if status.Stopped() {
-		db.state = Stopped
+		db.processState = Stopped
 	} else {
 		panic(fmt.Sprintf("Unhandled wait status: %v", status))
 	}
 
 	printWaitStatus(db.Pid, status)
+
+	if db.processState == Stopped {
+		regs, err := db.GetRegisterState()
+		if err != nil {
+			return 0, err
+		}
+		fmt.Printf("REGISTERS: %#v\n", regs)
+	}
+
 	return status, nil
 }
 
@@ -147,7 +161,7 @@ func (db *Debugger) SignalToProcess(signal syscall.Signal) error {
 }
 
 func (db *Debugger) Close() error {
-	if db.state == Running {
+	if db.processState == Running {
 		err := db.SignalToProcess(syscall.SIGSTOP)
 		if err != nil {
 			return err
@@ -159,7 +173,7 @@ func (db *Debugger) Close() error {
 		}
 	}
 
-	err := db.tracer.DetachFromProcess()
+	err := db.tracer.Detach()
 	if err != nil {
 		return err
 	}
@@ -182,4 +196,85 @@ func (db *Debugger) Close() error {
 	}
 
 	return nil
+}
+
+func (db *Debugger) GetRegisterState() (RegisterState, error) {
+	if db.processState != Stopped {
+		return RegisterState{}, fmt.Errorf(
+			"cannot get register state. process %d %s (not stopped)",
+			db.Pid,
+			db.processState)
+	}
+
+	gpr, err := db.tracer.GetGeneralRegisters()
+	if err != nil {
+		return RegisterState{}, err
+	}
+
+	fpr, err := db.tracer.GetFloatingPointRegisters()
+	if err != nil {
+		return RegisterState{}, err
+	}
+
+	regs := RegisterState{
+		gpr: *gpr,
+		fpr: *fpr,
+	}
+
+	for idx, _ := range regs.dr {
+		offset := userDebugRegistersOffset + uintptr(idx*8)
+		value, err := db.tracer.PeekUserArea(offset)
+		if err != nil {
+			return RegisterState{}, err
+		}
+		regs.dr[idx] = value
+	}
+
+	return regs, nil
+}
+
+func (db *Debugger) SetRegisterState(state RegisterState) error {
+	if db.processState != Stopped {
+		return fmt.Errorf(
+			"cannot set register state. process %d %s (not stopped)",
+			db.Pid,
+			db.processState)
+	}
+
+	err := db.tracer.SetGeneralRegisters(&state.gpr)
+	if err != nil {
+		return err
+	}
+
+	err = db.tracer.SetFloatingPointRegisters(&state.fpr)
+	if err != nil {
+		return err
+	}
+
+	for idx, value := range state.dr {
+		// dr4 and dr5 are not real registers
+		// https://en.wikipedia.org/wiki/X86_debug_register
+		if idx == 4 || idx == 5 {
+			continue
+		}
+
+		offset := userDebugRegistersOffset + uintptr(idx*8)
+		err := db.tracer.PokeUserArea(offset, value)
+		if err != nil {
+			return fmt.Errorf("failed to set dr%d: %w", idx, err)
+		}
+	}
+
+	return nil
+}
+
+func init() {
+	user := ptrace.User{}
+	userType := reflect.TypeOf(user)
+
+	field, ok := userType.FieldByName("UDebugReg")
+	if !ok {
+		panic("should never happen")
+	}
+	userDebugRegistersOffset = field.Offset
 }
