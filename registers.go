@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"math"
 	"reflect"
+	"strconv"
 	"strings"
 	"unsafe"
 
@@ -42,11 +43,13 @@ type RegisterValue interface {
 	ToUint32() uint32
 	ToUint64() uint64
 	ToUint128() Uint128
+
+	String() string
 }
 
 type Uint128 struct {
-	Low  uint64
 	High uint64
+	Low  uint64
 }
 
 func (Uint128) Size() uintptr {
@@ -69,10 +72,14 @@ func (u Uint128) ToUint128() Uint128 {
 	return u
 }
 
-func Uint128Value(low uint64, high uint64) Uint128 {
+func (u Uint128) String() string {
+	return fmt.Sprintf("0x%016x:0x%016x", u.High, u.Low)
+}
+
+func Uint128Value(high uint64, low uint64) Uint128 {
 	return Uint128{
-		Low:  low,
 		High: high,
+		Low:  low,
 	}
 }
 
@@ -101,6 +108,10 @@ func (u Uint[T]) ToUint128() Uint128 {
 		Low:  uint64(u.Value),
 		High: 0,
 	}
+}
+
+func (u Uint[T]) String() string {
+	return fmt.Sprintf(fmt.Sprintf("0x%%0%dx", u.Size()*2), u.Value)
 }
 
 type Uint8 = Uint[uint8]
@@ -161,7 +172,11 @@ func (i Int[T]) ToUint128() Uint128 {
 	if i.Value < 0 {
 		high = ^high // negative sign extended
 	}
-	return Uint128Value(low, high)
+	return Uint128Value(high, low)
+}
+
+func (u Int[T]) String() string {
+	return fmt.Sprintf(fmt.Sprintf("0x%%0%dx", u.Size()*2), u.Value)
 }
 
 type Int8 = Int[int8]
@@ -215,7 +230,11 @@ func (f Float32) ToUint64() uint64 {
 }
 
 func (f Float32) ToUint128() Uint128 {
-	return Uint128Value(f.ToUint64(), 0)
+	return Uint128Value(0, f.ToUint64())
+}
+
+func (f Float32) String() string {
+	return fmt.Sprintf("f:%f", f)
 }
 
 func Float32Value(v float32) RegisterValue {
@@ -241,7 +260,11 @@ func (f Float64) ToUint64() uint64 {
 }
 
 func (f Float64) ToUint128() Uint128 {
-	return Uint128Value(f.ToUint64(), 0)
+	return Uint128Value(0, f.ToUint64())
+}
+
+func (f Float64) String() string {
+	return fmt.Sprintf("d:%f", f)
 }
 
 func Float64Value(v float64) RegisterValue {
@@ -268,13 +291,16 @@ type RegisterInfo struct {
 
 // Valid types:
 //
-// 8-bit register: uint8, int8
-// 16-bit register: uint16, int16
-// 32-bit register: uint32, int32
-// 64-bit register: uint64, int64
-// 128-bit (floating point) register: [2]uint64, float32, float64
+// 8-bit register: Uint8, Int8
+// 16-bit register: Uint16, Int16
+// 32-bit register: Uint32, Int32
+// 64-bit register: Uint64, Int64
+// 128-bit (floating point) register: Uint128, Float32, Float64
 //
 // uint and float are zero extended, int is sign extended.
+//
+// NOTE: mm0, ..., mm7 are in reality 8-byte registers, and st0, ..., st7 are
+// in reality 10-byte registers, but both have 16-byte representation in linux.
 func (reg RegisterInfo) CanAccept(value RegisterValue) error {
 	// dr4 and dr5 are not real registers
 	// https://en.wikipedia.org/wiki/X86_debug_register
@@ -301,6 +327,12 @@ func (reg RegisterInfo) CanAccept(value RegisterValue) error {
 
 	// All other registers
 
+	if value.IsFloat() {
+		return fmt.Errorf(
+			"cannot use floating point value in register (%s)",
+			reg.Name)
+	}
+
 	if reg.Size != value.Size() {
 		return fmt.Errorf(
 			"register (%s) size (%d) does not match value size (%d)",
@@ -309,13 +341,91 @@ func (reg RegisterInfo) CanAccept(value RegisterValue) error {
 			value.Size())
 	}
 
-	if value.IsFloat() {
-		return fmt.Errorf(
-			"cannot use floating point value in register (%s)",
-			reg.Name)
+	return nil
+}
+
+func (reg RegisterInfo) ParseValue(value string) (RegisterValue, error) {
+	if strings.HasPrefix(value, "f:") {
+		floatValue, err := strconv.ParseFloat(value[2:], 32)
+		if err != nil {
+			return nil, fmt.Errorf("failed to parse float32 (%s): %w", value[2:], err)
+		}
+
+		return Float32Value(float32(floatValue)), nil
+	} else if strings.HasPrefix(value, "d:") {
+		floatValue, err := strconv.ParseFloat(value[2:], 64)
+		if err != nil {
+			return nil, fmt.Errorf("failed to parse float64 (%s): %w", value[2:], err)
+		}
+
+		return Float64Value(floatValue), nil
+	} else if strings.HasPrefix(value, "i:") {
+		bitSize := int(reg.Size * 8)
+		if bitSize > 64 {
+			bitSize = 64
+		}
+		intValue, err := strconv.ParseInt(value[2:], 0, bitSize)
+		if err != nil {
+			return nil, fmt.Errorf("failed to parse int (%s): %w", value[2:], err)
+		}
+
+		switch reg.Size {
+		case 1:
+			return Int8Value(int8(intValue)), nil
+		case 2:
+			return Int16Value(int16(intValue)), nil
+		case 4:
+			return Int32Value(int32(intValue)), nil
+		case 8, 16:
+			return Int64Value(intValue), nil
+		default:
+			panic(fmt.Sprintf("unhandled size %d", reg.Size))
+		}
 	}
 
-	return nil
+	chunks := strings.Split(value, ":")
+	if len(chunks) == 2 { // u128
+		high, err := strconv.ParseUint(chunks[0], 0, 64)
+		if err != nil {
+			return nil, fmt.Errorf(
+				"failed to parse uint128 high word (%s): %w",
+				chunks[0],
+				err)
+		}
+
+		low, err := strconv.ParseUint(chunks[1], 0, 64)
+		if err != nil {
+			return nil, fmt.Errorf(
+				"failed to parse uint128 low word (%s): %w",
+				chunks[1],
+				err)
+		}
+
+		return Uint128Value(high, low), nil
+	}
+
+	bitSize := int(reg.Size * 8)
+	if bitSize > 64 {
+		bitSize = 64
+	}
+
+	uintValue, err := strconv.ParseUint(value, 0, bitSize)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse uint (%s): %w", value, err)
+	}
+
+	switch reg.Size {
+	case 1:
+		return Uint8Value(uint8(uintValue)), nil
+	case 2:
+		return Uint16Value(uint16(uintValue)), nil
+	case 4:
+		return Uint32Value(uint32(uintValue)), nil
+	case 8, 16:
+		return Uint64Value(uintValue), nil
+	default:
+		panic(fmt.Sprintf("unhandled size %d", reg.Size))
+	}
 }
 
 type RegisterState struct {
@@ -334,14 +444,14 @@ func (state RegisterState) Value(reg RegisterInfo) RegisterValue {
 	case FloatingPointRegister:
 		if reg.Field == stSpace {
 			return Uint128Value(
-				state.fpr.StSpace[2*reg.Index],
-				state.fpr.StSpace[2*reg.Index+1])
+				state.fpr.StSpace[2*reg.Index+1],
+				state.fpr.StSpace[2*reg.Index])
 		}
 
 		if reg.Field == xmmSpace {
 			return Uint128Value(
-				state.fpr.XmmSpace[2*reg.Index],
-				state.fpr.XmmSpace[2*reg.Index+1])
+				state.fpr.XmmSpace[2*reg.Index+1],
+				state.fpr.XmmSpace[2*reg.Index])
 		}
 
 		data = reflect.ValueOf(state.fpr)
@@ -425,9 +535,35 @@ func (state RegisterState) WithValue(
 	return newState, nil
 }
 
-type RegisterSet map[string]RegisterInfo
+type RegisterSet struct {
+	Registers []RegisterInfo
+}
 
-func (set RegisterSet) addRegister(
+func (set RegisterSet) RegisterByName(name string) (RegisterInfo, bool) {
+	for _, reg := range set.Registers {
+		if reg.Name == name {
+			return reg, true
+		}
+	}
+
+	return RegisterInfo{}, false
+}
+
+func (set RegisterSet) RegisterByDwarfId(id int) (RegisterInfo, bool) {
+	if id == -1 {
+		return RegisterInfo{}, false
+	}
+
+	for _, reg := range set.Registers {
+		if reg.DwarfId == id {
+			return reg, true
+		}
+	}
+
+	return RegisterInfo{}, false
+}
+
+func (set *RegisterSet) addRegister(
 	name string,
 	dwarfId int,
 	size uintptr,
@@ -436,51 +572,54 @@ func (set RegisterSet) addRegister(
 	isHigh bool,
 	index int,
 ) {
-	_, ok := set[name]
-	if ok {
-		panic("duplicate register info: " + name)
+	for _, reg := range set.Registers {
+		if name == reg.Name {
+			panic("duplicate register info: " + name)
+		}
 	}
 
-	set[name] = RegisterInfo{
-		Name:           name,
-		DwarfId:        dwarfId,
-		Size:           size,
-		Class:          class,
-		Field:          field,
-		IsHighRegister: isHigh,
-		Index:          index,
-	}
+	set.Registers = append(
+		set.Registers,
+		RegisterInfo{
+			Name:           name,
+			DwarfId:        dwarfId,
+			Size:           size,
+			Class:          class,
+			Field:          field,
+			IsHighRegister: isHigh,
+			Index:          index,
+		})
 }
 
-func (set RegisterSet) addGpr64(name string, dwarfId int, field string) {
+func (set *RegisterSet) addGpr64(name string, dwarfId int, field string) {
 	set.addRegister(name, dwarfId, 8, GeneralRegister, field, false, 0)
 }
 
-func (set RegisterSet) addSubGpr32(name string, field string) {
+func (set *RegisterSet) addSubGpr32(name string, field string) {
 	set.addRegister(name, -1, 4, GeneralRegister, field, false, 0)
 }
 
-func (set RegisterSet) addSubGpr16(name string, field string) {
+func (set *RegisterSet) addSubGpr16(name string, field string) {
 	set.addRegister(name, -1, 2, GeneralRegister, field, false, 0)
 }
 
-func (set RegisterSet) addSubGpr8(name string, field string, isHigh bool) {
+func (set *RegisterSet) addSubGpr8(name string, field string, isHigh bool) {
 	set.addRegister(name, -1, 1, GeneralRegister, field, isHigh, 0)
 }
 
-func (set RegisterSet) addFpr16(name string, dwarfId int, field string) {
+func (set *RegisterSet) addFpr16(name string, dwarfId int, field string) {
 	set.addRegister(name, dwarfId, 2, FloatingPointRegister, field, false, 0)
 }
 
-func (set RegisterSet) addFpr32(name string, dwarfId int, field string) {
+func (set *RegisterSet) addFpr32(name string, dwarfId int, field string) {
 	set.addRegister(name, dwarfId, 4, FloatingPointRegister, field, false, 0)
 }
 
-func (set RegisterSet) addFpr64(name string, field string) {
+func (set *RegisterSet) addFpr64(name string, field string) {
 	set.addRegister(name, -1, 8, FloatingPointRegister, field, false, 0)
 }
 
-func (set RegisterSet) addFpr128(
+func (set *RegisterSet) addFpr128(
 	prefix string,
 	dwarfIdStart int,
 	field string,
@@ -496,7 +635,7 @@ func (set RegisterSet) addFpr128(
 		idx)
 }
 
-func (set RegisterSet) addDr64(idx int) {
+func (set *RegisterSet) addDr64(idx int) {
 	set.addRegister(
 		fmt.Sprintf("dr%d", idx),
 		-1,
@@ -507,8 +646,8 @@ func (set RegisterSet) addDr64(idx int) {
 		idx)
 }
 
-func NewRegisterSet() RegisterSet {
-	set := RegisterSet{}
+func NewRegisterSet() *RegisterSet {
+	set := &RegisterSet{}
 
 	dwarfIds := map[string]int{
 		"rip":    16,

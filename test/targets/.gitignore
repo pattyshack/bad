@@ -1,0 +1,9 @@
+CMakeCache.txt
+CMakeFiles/*
+cmake_install.cmake
+Makefile
+
+print_longdouble
+reg_read
+reg_write
+run_endlessly

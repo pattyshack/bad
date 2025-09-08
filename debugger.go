@@ -14,28 +14,10 @@ var (
 	userDebugRegistersOffset = uintptr(0) // initialized by init()
 )
 
-func printWaitStatus(pid int, status syscall.WaitStatus) {
-	if status.Exited() {
-		fmt.Printf("process %d exited with status: %d\n", pid, status.ExitStatus())
-	} else if status.Signaled() {
-		fmt.Printf("process %d terminated with signal: %v\n", pid, status.Signal())
-	} else if status.Stopped() {
-		fmt.Printf("process %d stopped with signal: %v\n", pid, status.StopSignal())
-	}
-}
+type VirtualAddress uint64
 
-func Continue(db *Debugger, args []string) error {
-	err := db.ResumeProcess(0)
-	if err != nil {
-		return err
-	}
-
-	_, err = db.WaitForProcessSignal()
-	if err != nil {
-		return err
-	}
-
-	return nil
+func (addr VirtualAddress) String() string {
+	return fmt.Sprintf("0x%x", uint64(addr))
 }
 
 type ProcessState string
@@ -50,13 +32,15 @@ const (
 type Debugger struct {
 	tracer *ptrace.Tracer
 
+	*RegisterSet
+
 	Pid         int
 	ownsProcess bool
 
 	processState ProcessState
 }
 
-func AttachToProcess(pid int) (*Debugger, error) {
+func AttachTo(pid int) (*Debugger, error) {
 	tracer, err := ptrace.AttachToProcess(pid)
 	if err != nil {
 		return nil, err
@@ -64,12 +48,13 @@ func AttachToProcess(pid int) (*Debugger, error) {
 
 	db := &Debugger{
 		tracer:       tracer,
+		RegisterSet:  NewRegisterSet(),
 		Pid:          tracer.Pid(),
 		ownsProcess:  false,
 		processState: Stopped,
 	}
 
-	_, err = db.WaitForProcessSignal()
+	_, err = db.WaitForSignal()
 	if err != nil {
 		_ = tracer.Detach()
 		return nil, err
@@ -78,11 +63,7 @@ func AttachToProcess(pid int) (*Debugger, error) {
 	return db, nil
 }
 
-func StartAndAttachToProcess(name string, args ...string) (*Debugger, error) {
-	cmd := exec.Command(name, args...)
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-
+func StartAndAttachTo(cmd *exec.Cmd) (*Debugger, error) {
 	tracer, err := ptrace.StartAndAttachToProcess(cmd)
 	if err != nil {
 		return nil, err
@@ -90,12 +71,13 @@ func StartAndAttachToProcess(name string, args ...string) (*Debugger, error) {
 
 	db := &Debugger{
 		tracer:       tracer,
+		RegisterSet:  NewRegisterSet(),
 		Pid:          tracer.Pid(),
 		ownsProcess:  true,
 		processState: Stopped,
 	}
 
-	_, err = db.WaitForProcessSignal()
+	_, err = db.WaitForSignal()
 	if err != nil {
 		_ = tracer.Detach()
 		return nil, err
@@ -104,8 +86,16 @@ func StartAndAttachToProcess(name string, args ...string) (*Debugger, error) {
 	return db, nil
 }
 
-func (db *Debugger) ResumeProcess(signal int) error {
-	err := db.tracer.Resume(signal)
+func StartCmdAndAttachTo(name string, args ...string) (*Debugger, error) {
+	cmd := exec.Command(name, args...)
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+
+	return StartAndAttachTo(cmd)
+}
+
+func (db *Debugger) Resume() error {
+	err := db.tracer.Resume(0)
 	if err != nil {
 		return err
 	}
@@ -116,7 +106,7 @@ func (db *Debugger) ResumeProcess(signal int) error {
 	return nil
 }
 
-func (db *Debugger) WaitForProcessSignal() (syscall.WaitStatus, error) {
+func (db *Debugger) WaitForSignal() (syscall.WaitStatus, error) {
 	// NOTE: golang does not support waitpid
 	var status syscall.WaitStatus
 	_, err := syscall.Wait4(db.Pid, &status, 0, nil)
@@ -134,20 +124,33 @@ func (db *Debugger) WaitForProcessSignal() (syscall.WaitStatus, error) {
 		panic(fmt.Sprintf("Unhandled wait status: %v", status))
 	}
 
-	printWaitStatus(db.Pid, status)
-
-	if db.processState == Stopped {
-		regs, err := db.GetRegisterState()
+	if status.Exited() {
+		fmt.Printf(
+			"process %d exited with status: %d\n",
+			db.Pid,
+			status.ExitStatus())
+	} else if status.Signaled() {
+		fmt.Printf(
+			"process %d terminated with signal: %v\n",
+			db.Pid,
+			status.Signal())
+	} else if status.Stopped() {
+		pc, err := db.GetProgramCounter()
 		if err != nil {
 			return 0, err
 		}
-		fmt.Printf("REGISTERS: %#v\n", regs)
+
+		fmt.Printf(
+			"process %d stopped at %s with signal: %v\n",
+			db.Pid,
+			pc,
+			status.StopSignal())
 	}
 
 	return status, nil
 }
 
-func (db *Debugger) SignalToProcess(signal syscall.Signal) error {
+func (db *Debugger) Signal(signal syscall.Signal) error {
 	err := syscall.Kill(db.Pid, signal)
 	if err != nil {
 		return fmt.Errorf("failed to signal to process %d (%v): %w",
@@ -162,12 +165,12 @@ func (db *Debugger) SignalToProcess(signal syscall.Signal) error {
 
 func (db *Debugger) Close() error {
 	if db.processState == Running {
-		err := db.SignalToProcess(syscall.SIGSTOP)
+		err := db.Signal(syscall.SIGSTOP)
 		if err != nil {
 			return err
 		}
 
-		_, err = db.WaitForProcessSignal()
+		_, err = db.WaitForSignal()
 		if err != nil {
 			return err
 		}
@@ -178,18 +181,18 @@ func (db *Debugger) Close() error {
 		return err
 	}
 
-	err = db.SignalToProcess(syscall.SIGCONT)
+	err = db.Signal(syscall.SIGCONT)
 	if err != nil {
 		return err
 	}
 
 	if db.ownsProcess {
-		err = db.SignalToProcess(syscall.SIGKILL)
+		err = db.Signal(syscall.SIGKILL)
 		if err != nil {
 			return err
 		}
 
-		_, err = db.WaitForProcessSignal()
+		_, err = db.WaitForSignal()
 		if err != nil {
 			return err
 		}
@@ -266,6 +269,20 @@ func (db *Debugger) SetRegisterState(state RegisterState) error {
 	}
 
 	return nil
+}
+
+func (db *Debugger) GetProgramCounter() (VirtualAddress, error) {
+	state, err := db.GetRegisterState()
+	if err != nil {
+		return 0, fmt.Errorf("failed to read program counter: %w", err)
+	}
+
+	rip, ok := db.RegisterByName("rip")
+	if !ok {
+		panic("should never happen")
+	}
+
+	return VirtualAddress(state.Value(rip).ToUint64()), nil
 }
 
 func init() {
