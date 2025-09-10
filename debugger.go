@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"reflect"
+	"strconv"
 	"syscall"
 
 	"github.com/pattyshack/bad/ptrace"
@@ -12,32 +13,55 @@ import (
 
 var (
 	userDebugRegistersOffset = uintptr(0) // initialized by init()
+
+	ErrProcessExited = fmt.Errorf("process exited")
 )
 
 type VirtualAddress uint64
 
 func (addr VirtualAddress) String() string {
-	return fmt.Sprintf("0x%x", uint64(addr))
+	return fmt.Sprintf("0x%016x", uint64(addr))
 }
 
-type ProcessState string
+func ParseVirtualAddress(value string) (VirtualAddress, error) {
+	addr, err := strconv.ParseUint(value, 0, 64)
+	if err != nil {
+		return 0, fmt.Errorf("failed to parse virtual address (%s): %w", value, err)
+	}
 
-const (
-	Stopped    = ProcessState("stopped")
-	Running    = ProcessState("running")
-	Exited     = ProcessState("exited")
-	Terminated = ProcessState("terminated")
-)
+	return VirtualAddress(addr), nil
+}
 
 type Debugger struct {
 	tracer *ptrace.Tracer
 
 	*RegisterSet
 
+	BreakPointSites *StopPointSet
+
 	Pid         int
 	ownsProcess bool
 
-	processState ProcessState
+	state ProcessState
+}
+
+func newDebugger(tracer *ptrace.Tracer, ownsProcess bool) (*Debugger, error) {
+	db := &Debugger{
+		tracer:          tracer,
+		RegisterSet:     NewRegisterSet(),
+		BreakPointSites: NewBreakPointSites(tracer),
+		Pid:             tracer.Pid(),
+		ownsProcess:     ownsProcess,
+		state:           newRunningProcessState(tracer.Pid()),
+	}
+
+	_, err := db.waitForSignal()
+	if err != nil {
+		_ = tracer.Detach()
+		return nil, err
+	}
+
+	return db, nil
 }
 
 func AttachTo(pid int) (*Debugger, error) {
@@ -46,21 +70,7 @@ func AttachTo(pid int) (*Debugger, error) {
 		return nil, err
 	}
 
-	db := &Debugger{
-		tracer:       tracer,
-		RegisterSet:  NewRegisterSet(),
-		Pid:          tracer.Pid(),
-		ownsProcess:  false,
-		processState: Stopped,
-	}
-
-	_, err = db.WaitForSignal()
-	if err != nil {
-		_ = tracer.Detach()
-		return nil, err
-	}
-
-	return db, nil
+	return newDebugger(tracer, false)
 }
 
 func StartAndAttachTo(cmd *exec.Cmd) (*Debugger, error) {
@@ -69,21 +79,7 @@ func StartAndAttachTo(cmd *exec.Cmd) (*Debugger, error) {
 		return nil, err
 	}
 
-	db := &Debugger{
-		tracer:       tracer,
-		RegisterSet:  NewRegisterSet(),
-		Pid:          tracer.Pid(),
-		ownsProcess:  true,
-		processState: Stopped,
-	}
-
-	_, err = db.WaitForSignal()
-	if err != nil {
-		_ = tracer.Detach()
-		return nil, err
-	}
-
-	return db, nil
+	return newDebugger(tracer, true)
 }
 
 func StartCmdAndAttachTo(name string, args ...string) (*Debugger, error) {
@@ -94,63 +90,159 @@ func StartCmdAndAttachTo(name string, args ...string) (*Debugger, error) {
 	return StartAndAttachTo(cmd)
 }
 
-func (db *Debugger) Resume() error {
-	err := db.tracer.Resume(0)
-	if err != nil {
-		return err
+func (db *Debugger) resume() error {
+	if db.state.Exited() {
+		return fmt.Errorf(
+			"failed to resume process %d: %w",
+			db.Pid,
+			ErrProcessExited)
 	}
 
-	db.processState = Running
+	site, ok := db.BreakPointSites.Get(db.state.NextInstructionAddress)
+	if ok && site.IsEnabled() {
+		_, err := db.stepInstruction()
+		if err != nil {
+			return fmt.Errorf("failed to resume process %d: %w", db.Pid, err)
+		}
+	}
 
-	fmt.Println("process", db.Pid, "running")
+	err := db.tracer.Resume(0)
+	if err != nil {
+		return fmt.Errorf("failed to resume process %d: %w", db.Pid, err)
+	}
+
+	db.state = newRunningProcessState(db.Pid)
 	return nil
 }
 
-func (db *Debugger) WaitForSignal() (syscall.WaitStatus, error) {
+func (db *Debugger) ResumeUntilSignal() (ProcessState, error) {
+	err := db.resume()
+	if err != nil {
+		return ProcessState{}, err
+	}
+
+	state, err := db.waitForSignal()
+	if err != nil {
+		return ProcessState{}, fmt.Errorf(
+			"failed to resume process %d: %w",
+			db.Pid,
+			err)
+	}
+
+	return state, nil
+}
+
+func (db *Debugger) StepInstruction() (ProcessState, error) {
+	if db.state.Exited() {
+		return db.state, fmt.Errorf(
+			"failed to step instruction for process %d: %w",
+			db.Pid,
+			ErrProcessExited)
+	}
+
+	state, err := db.stepInstruction()
+	if err != nil {
+		return state, fmt.Errorf(
+			"failed to step instruction for process %d: %w",
+			db.Pid,
+			err)
+	}
+
+	return state, nil
+}
+
+func (db *Debugger) stepInstruction() (ProcessState, error) {
+	addr := db.state.NextInstructionAddress
+
+	site, ok := db.BreakPointSites.Get(addr)
+	siteIsEnabled := ok && site.IsEnabled()
+	if siteIsEnabled {
+		err := site.Disable()
+		if err != nil {
+			return ProcessState{}, fmt.Errorf(
+				"failed to disable break point at %s: %w",
+				addr,
+				err)
+		}
+	}
+
+	err := db.tracer.SingleStep()
+	if err != nil {
+		return ProcessState{}, fmt.Errorf(
+			"failed to single step at %s: %w",
+			addr,
+			err)
+	}
+
+	state, err := db.waitForSignal()
+	if err != nil {
+		return ProcessState{}, fmt.Errorf(
+			"failed to wait for step instruction at %s: %w",
+			addr,
+			err)
+	}
+
+	if siteIsEnabled {
+		err = site.Enable()
+		if err != nil {
+			return ProcessState{}, fmt.Errorf(
+				"failed to re-enable break point at %s: %w",
+				addr,
+				err)
+		}
+	}
+
+	return state, nil
+}
+
+func (db *Debugger) waitForSignal() (ProcessState, error) {
 	// NOTE: golang does not support waitpid
 	var status syscall.WaitStatus
 	_, err := syscall.Wait4(db.Pid, &status, 0, nil)
 	if err != nil {
-		return 0, fmt.Errorf("failed to wait for process %d: %w", db.Pid, err)
+		return ProcessState{}, fmt.Errorf(
+			"failed to wait for process %d: %w",
+			db.Pid,
+			err)
 	}
 
-	if status.Exited() {
-		db.processState = Exited
-	} else if status.Signaled() {
-		db.processState = Terminated
-	} else if status.Stopped() {
-		db.processState = Stopped
-	} else {
-		panic(fmt.Sprintf("Unhandled wait status: %v", status))
-	}
+	db.state = newProcessState(db.Pid, status)
 
-	if status.Exited() {
-		fmt.Printf(
-			"process %d exited with status: %d\n",
-			db.Pid,
-			status.ExitStatus())
-	} else if status.Signaled() {
-		fmt.Printf(
-			"process %d terminated with signal: %v\n",
-			db.Pid,
-			status.Signal())
-	} else if status.Stopped() {
-		pc, err := db.GetProgramCounter()
+	if db.state.Stopped() {
+		nextInstructionAddr, err := db.getProgramCounter()
 		if err != nil {
-			return 0, err
+			return ProcessState{}, fmt.Errorf(
+				"failed to wait for process %d: %w",
+				db.Pid,
+				err)
 		}
 
-		fmt.Printf(
-			"process %d stopped at %s with signal: %v\n",
-			db.Pid,
-			pc,
-			status.StopSignal())
+		db.state.NextInstructionAddress = nextInstructionAddr
+
+		if db.state.StopSignal() == syscall.SIGTRAP {
+			// NOTE: currentInstructionAddr may not be a valid instruction address
+			// since x64 instruction could span multiple bytes.  However, since break
+			// point sites are implemented using the int3 (0xcc), we know for sure
+			// the address is valid if the current instruction is a break point site.
+			currentInstructionAddr := nextInstructionAddr - 1
+
+			site, ok := db.BreakPointSites.Get(currentInstructionAddr)
+			if ok && site.IsEnabled() {
+				// set pc back to int3's address
+				err := db.setProgramCounter(currentInstructionAddr)
+				if err != nil {
+					return ProcessState{}, fmt.Errorf(
+						"failed to reset program counter at break point: %w",
+						err)
+				}
+			}
+		}
 	}
 
-	return status, nil
+	return db.state, nil
 }
 
-func (db *Debugger) Signal(signal syscall.Signal) error {
+func (db *Debugger) signal(signal syscall.Signal) error {
 	err := syscall.Kill(db.Pid, signal)
 	if err != nil {
 		return fmt.Errorf("failed to signal to process %d (%v): %w",
@@ -159,21 +251,24 @@ func (db *Debugger) Signal(signal syscall.Signal) error {
 			err)
 	}
 
-	fmt.Printf("signaled to process %d: %s\n", db.Pid, signal)
 	return nil
 }
 
 func (db *Debugger) Close() error {
-	if db.processState == Running {
-		err := db.Signal(syscall.SIGSTOP)
+	if db.state.Running() {
+		err := db.signal(syscall.SIGSTOP)
 		if err != nil {
 			return err
 		}
 
-		_, err = db.WaitForSignal()
+		_, err = db.waitForSignal()
 		if err != nil {
 			return err
 		}
+	}
+
+	if db.state.Exited() { // nothing to detach from
+		return nil
 	}
 
 	err := db.tracer.Detach()
@@ -181,18 +276,18 @@ func (db *Debugger) Close() error {
 		return err
 	}
 
-	err = db.Signal(syscall.SIGCONT)
+	err = db.signal(syscall.SIGCONT)
 	if err != nil {
 		return err
 	}
 
 	if db.ownsProcess {
-		err = db.Signal(syscall.SIGKILL)
+		err = db.signal(syscall.SIGKILL)
 		if err != nil {
 			return err
 		}
 
-		_, err = db.WaitForSignal()
+		_, err = db.waitForSignal()
 		if err != nil {
 			return err
 		}
@@ -202,11 +297,11 @@ func (db *Debugger) Close() error {
 }
 
 func (db *Debugger) GetRegisterState() (RegisterState, error) {
-	if db.processState != Stopped {
+	if !db.state.Stopped() {
 		return RegisterState{}, fmt.Errorf(
-			"cannot get register state. process %d %s (not stopped)",
+			"cannot get register state. process %d not stopped (%s)",
 			db.Pid,
-			db.processState)
+			db.state)
 	}
 
 	gpr, err := db.tracer.GetGeneralRegisters()
@@ -237,11 +332,11 @@ func (db *Debugger) GetRegisterState() (RegisterState, error) {
 }
 
 func (db *Debugger) SetRegisterState(state RegisterState) error {
-	if db.processState != Stopped {
+	if !db.state.Stopped() {
 		return fmt.Errorf(
-			"cannot set register state. process %d %s (not stopped)",
+			"cannot set register state. process %d not stopped (%s)",
 			db.Pid,
-			db.processState)
+			db.state)
 	}
 
 	err := db.tracer.SetGeneralRegisters(&state.gpr)
@@ -271,7 +366,7 @@ func (db *Debugger) SetRegisterState(state RegisterState) error {
 	return nil
 }
 
-func (db *Debugger) GetProgramCounter() (VirtualAddress, error) {
+func (db *Debugger) getProgramCounter() (VirtualAddress, error) {
 	state, err := db.GetRegisterState()
 	if err != nil {
 		return 0, fmt.Errorf("failed to read program counter: %w", err)
@@ -283,6 +378,34 @@ func (db *Debugger) GetProgramCounter() (VirtualAddress, error) {
 	}
 
 	return VirtualAddress(state.Value(rip).ToUint64()), nil
+}
+
+func (db *Debugger) setProgramCounter(addr VirtualAddress) error {
+	state, err := db.GetRegisterState()
+	if err != nil {
+		return fmt.Errorf("failed to read program counter: %w", err)
+	}
+
+	rip, ok := db.RegisterByName("rip")
+	if !ok {
+		panic("should never happen")
+	}
+
+	newState, err := state.WithValue(rip, Uint64Value(uint64(addr)))
+	if err != nil {
+		return fmt.Errorf(
+			"failed to update program counter state to %s: %w",
+			addr,
+			err)
+	}
+
+	err = db.SetRegisterState(newState)
+	if err != nil {
+		return fmt.Errorf("failed to set program counter to %s: %w", addr, err)
+	}
+
+	db.state.NextInstructionAddress = addr
+	return nil
 }
 
 func init() {

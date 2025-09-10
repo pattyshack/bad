@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -49,14 +50,24 @@ func (cmds subCommands) printAvailableCommands() {
 var (
 	topCmds = subCommands{
 		{
+			name:        "register",
+			description: "   - commands for operating on registers",
+			command:     registerCmds,
+		},
+		{
+			name:        "breakpoint",
+			description: " - commands for operating on break points",
+			command:     breakPointCmds,
+		},
+		{
 			name:        "continue",
-			description: " - Resume the process",
+			description: "   - resume the process",
 			command:     continueCmd{},
 		},
 		{
-			name:        "register",
-			description: " - Commands for operating on registers",
-			command:     registerCmds,
+			name:        "step",
+			description: " - step over a single instruction",
+			command:     stepInstructionCmd{},
 		},
 	}
 
@@ -64,15 +75,43 @@ var (
 		{
 			name: "read",
 			description: ":\n" +
-				"    read            - read general registers\n" +
-				"    read all        - read all registers\n" +
-				"    read <register> - read the named register",
+				"    read                   - read general registers\n" +
+				"    read all               - read all registers\n" +
+				"    read <register>        - read the named register",
 			command: readRegisterCmd{},
 		},
 		{
 			name:        "write",
 			description: " <register> <value> - write value to the named register",
 			command:     writeRegisterCmd{},
+		},
+	}
+
+	breakPointCmds = subCommands{
+		{
+			name:        "list",
+			description: "              - list all break points",
+			command:     listBreakPointsCmd{},
+		},
+		{
+			name:        "set",
+			description: " <address>     - create break point",
+			command:     setBreakPointCmd{},
+		},
+		{
+			name:        "remove",
+			description: " <address>  - remove break point",
+			command:     removeBreakPointCmd{},
+		},
+		{
+			name:        "enable",
+			description: " <address>  - enable break point",
+			command:     enableBreakPointCmd{},
+		},
+		{
+			name:        "disable",
+			description: " <address> - disable break point",
+			command:     disableBreakPointCmd{},
 		},
 	}
 )
@@ -86,16 +125,32 @@ func (noOpCmd) run(db *bad.Debugger, args []string) error {
 type continueCmd struct{}
 
 func (continueCmd) run(db *bad.Debugger, args []string) error {
-	err := db.Resume()
+	state, err := db.ResumeUntilSignal()
 	if err != nil {
+		if errors.Is(err, bad.ErrProcessExited) {
+			fmt.Println("cannot resume. process", db.Pid, "exited")
+			return nil
+		}
 		return err
 	}
 
-	_, err = db.WaitForSignal()
+	fmt.Println(state)
+	return nil
+}
+
+type stepInstructionCmd struct{}
+
+func (stepInstructionCmd) run(db *bad.Debugger, args []string) error {
+	state, err := db.StepInstruction()
 	if err != nil {
+		if errors.Is(err, bad.ErrProcessExited) {
+			fmt.Println("cannot step instruction. process", db.Pid, "exited")
+			return nil
+		}
 		return err
 	}
 
+	fmt.Println(state)
 	return nil
 }
 
@@ -184,6 +239,131 @@ func (writeRegisterCmd) run(db *bad.Debugger, args []string) error {
 	}
 
 	return db.SetRegisterState(state)
+}
+
+type listBreakPointsCmd struct{}
+
+func (listBreakPointsCmd) run(db *bad.Debugger, args []string) error {
+	sites := db.BreakPointSites.List()
+	if len(sites) == 0 {
+		fmt.Println("No break points set")
+		return nil
+	}
+
+	fmt.Println("Current break points")
+	for _, site := range sites {
+		fmt.Println("  address =", site.Address(), " enabled =", site.IsEnabled())
+	}
+
+	return nil
+}
+
+type setBreakPointCmd struct{}
+
+func (setBreakPointCmd) run(db *bad.Debugger, args []string) error {
+	if len(args) < 1 {
+		fmt.Println("failed to set break point. address not specified")
+		return nil
+	}
+
+	addr, err := bad.ParseVirtualAddress(args[0])
+	if err != nil {
+		fmt.Println("failed to set break point:", err)
+		return nil
+	}
+
+	_, err = db.BreakPointSites.Set(addr)
+	if err != nil {
+		if errors.Is(err, bad.ErrInvalidStopPointAddress) {
+			fmt.Println(err)
+			return nil
+		}
+		return err
+	}
+
+	return nil
+}
+
+type removeBreakPointCmd struct{}
+
+func (removeBreakPointCmd) run(db *bad.Debugger, args []string) error {
+	if len(args) < 1 {
+		fmt.Println("failed to remove break point. address not specified")
+		return nil
+	}
+
+	addr, err := bad.ParseVirtualAddress(args[0])
+	if err != nil {
+		fmt.Println("failed to remove break point:", err)
+		return nil
+	}
+
+	err = db.BreakPointSites.Remove(addr)
+	if err != nil {
+		if errors.Is(err, bad.ErrInvalidStopPointAddress) {
+			fmt.Println(err)
+			return nil
+		}
+		return err
+	}
+
+	return nil
+}
+
+type enableBreakPointCmd struct{}
+
+func (enableBreakPointCmd) run(db *bad.Debugger, args []string) error {
+	if len(args) < 1 {
+		fmt.Println("failed to enable break point. address not specified")
+		return nil
+	}
+
+	addr, err := bad.ParseVirtualAddress(args[0])
+	if err != nil {
+		fmt.Println("failed to enable break point:", err)
+		return nil
+	}
+
+	site, ok := db.BreakPointSites.Get(addr)
+	if !ok {
+		fmt.Println("no break point found at", addr)
+		return nil
+	}
+
+	err = site.Enable()
+	if err != nil {
+		return err
+	}
+
+	return nil
+}
+
+type disableBreakPointCmd struct{}
+
+func (disableBreakPointCmd) run(db *bad.Debugger, args []string) error {
+	if len(args) < 1 {
+		fmt.Println("failed to disable break point. address not specified")
+		return nil
+	}
+
+	addr, err := bad.ParseVirtualAddress(args[0])
+	if err != nil {
+		fmt.Println("failed to disable break point:", err)
+		return nil
+	}
+
+	site, ok := db.BreakPointSites.Get(addr)
+	if !ok {
+		fmt.Println("no break point found at", addr)
+		return nil
+	}
+
+	err = site.Disable()
+	if err != nil {
+		return err
+	}
+
+	return nil
 }
 
 func main() {

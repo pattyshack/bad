@@ -3,6 +3,7 @@ CMakeFiles/*
 cmake_install.cmake
 Makefile
 
+hello_world
 print_longdouble
 reg_read
 reg_write

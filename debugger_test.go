@@ -2,6 +2,7 @@ package bad
 
 import (
 	"errors"
+	"io"
 	"math"
 	"os"
 	"os/exec"
@@ -48,7 +49,9 @@ func (DebuggerSuite) TestAttachSuccess(t *testing.T) {
 	// sanity check
 	status, err := procfs.GetProcessStatus(cmd.Process.Pid)
 	expect.Nil(t, err)
-	expect.Equal(t, procfs.Running, status.State)
+	expect.True(
+		t,
+		procfs.Running == status.State || procfs.WaitingForDisk == status.State)
 
 	db, err := AttachTo(cmd.Process.Pid)
 	expect.Nil(t, err)
@@ -77,7 +80,7 @@ func (DebuggerSuite) TestResumeFromAttach(t *testing.T) {
 	expect.Nil(t, err)
 	expect.Equal(t, procfs.TracingStop, status.State)
 
-	err = db.Resume()
+	err = db.resume()
 	expect.Nil(t, err)
 
 	status, err = procfs.GetProcessStatus(cmd.Process.Pid)
@@ -96,7 +99,7 @@ func (DebuggerSuite) TestResumeFromStart(t *testing.T) {
 	expect.Nil(t, err)
 	expect.Equal(t, procfs.TracingStop, status.State)
 
-	err = db.Resume()
+	err = db.resume()
 	expect.Nil(t, err)
 
 	status, err = procfs.GetProcessStatus(db.Pid)
@@ -111,15 +114,15 @@ func (DebuggerSuite) TestResumeAlreadyTerminated(t *testing.T) {
 	expect.Nil(t, err)
 	defer db.Close()
 
-	err = db.Resume()
+	err = db.resume()
 	expect.Nil(t, err)
 
-	status, err := db.WaitForSignal()
+	status, err := db.waitForSignal()
 	expect.Nil(t, err)
 	expect.True(t, status.Exited())
 
-	err = db.Resume()
-	expect.Error(t, err, "no such process")
+	err = db.resume()
+	expect.Error(t, err, "process exited")
 }
 
 func (DebuggerSuite) TestSetRegisterState(t *testing.T) {
@@ -139,10 +142,10 @@ func (DebuggerSuite) TestSetRegisterState(t *testing.T) {
 	err = writer.Close()
 	expect.Nil(t, err)
 
-	err = db.Resume()
+	err = db.resume()
 	expect.Nil(t, err)
 
-	status, err := db.WaitForSignal()
+	status, err := db.waitForSignal()
 	expect.Nil(t, err)
 	expect.True(t, status.Stopped())
 
@@ -160,10 +163,10 @@ func (DebuggerSuite) TestSetRegisterState(t *testing.T) {
 	err = db.SetRegisterState(regState)
 	expect.Nil(t, err)
 
-	err = db.Resume()
+	err = db.resume()
 	expect.Nil(t, err)
 
-	status, err = db.WaitForSignal()
+	status, err = db.waitForSignal()
 	expect.Nil(t, err)
 	expect.True(t, status.Stopped())
 
@@ -186,10 +189,10 @@ func (DebuggerSuite) TestSetRegisterState(t *testing.T) {
 	err = db.SetRegisterState(regState)
 	expect.Nil(t, err)
 
-	err = db.Resume()
+	err = db.resume()
 	expect.Nil(t, err)
 
-	status, err = db.WaitForSignal()
+	status, err = db.waitForSignal()
 	expect.Nil(t, err)
 	expect.True(t, status.Stopped())
 
@@ -211,10 +214,10 @@ func (DebuggerSuite) TestSetRegisterState(t *testing.T) {
 	err = db.SetRegisterState(regState)
 	expect.Nil(t, err)
 
-	err = db.Resume()
+	err = db.resume()
 	expect.Nil(t, err)
 
-	status, err = db.WaitForSignal()
+	status, err = db.waitForSignal()
 	expect.Nil(t, err)
 	expect.True(t, status.Stopped())
 
@@ -265,10 +268,10 @@ func (DebuggerSuite) TestSetRegisterState(t *testing.T) {
 	err = db.SetRegisterState(regState)
 	expect.Nil(t, err)
 
-	err = db.Resume()
+	err = db.resume()
 	expect.Nil(t, err)
 
-	status, err = db.WaitForSignal()
+	status, err = db.waitForSignal()
 	expect.Nil(t, err)
 	expect.True(t, status.Stopped())
 
@@ -284,10 +287,10 @@ func (DebuggerSuite) TestGetRegisterState(t *testing.T) {
 
 	// check r13
 
-	err = db.Resume()
+	err = db.resume()
 	expect.Nil(t, err)
 
-	status, err := db.WaitForSignal()
+	status, err := db.waitForSignal()
 	expect.Nil(t, err)
 	expect.True(t, status.Stopped())
 
@@ -302,10 +305,10 @@ func (DebuggerSuite) TestGetRegisterState(t *testing.T) {
 
 	// check r13b
 
-	err = db.Resume()
+	err = db.resume()
 	expect.Nil(t, err)
 
-	status, err = db.WaitForSignal()
+	status, err = db.waitForSignal()
 	expect.Nil(t, err)
 	expect.True(t, status.Stopped())
 
@@ -320,10 +323,10 @@ func (DebuggerSuite) TestGetRegisterState(t *testing.T) {
 
 	// check mm0
 
-	err = db.Resume()
+	err = db.resume()
 	expect.Nil(t, err)
 
-	status, err = db.WaitForSignal()
+	status, err = db.waitForSignal()
 	expect.Nil(t, err)
 	expect.True(t, status.Stopped())
 
@@ -341,10 +344,10 @@ func (DebuggerSuite) TestGetRegisterState(t *testing.T) {
 
 	// check xmm0
 
-	err = db.Resume()
+	err = db.resume()
 	expect.Nil(t, err)
 
-	status, err = db.WaitForSignal()
+	status, err = db.waitForSignal()
 	expect.Nil(t, err)
 	expect.True(t, status.Stopped())
 
@@ -362,10 +365,10 @@ func (DebuggerSuite) TestGetRegisterState(t *testing.T) {
 
 	// check st0
 
-	err = db.Resume()
+	err = db.resume()
 	expect.Nil(t, err)
 
-	status, err = db.WaitForSignal()
+	status, err = db.waitForSignal()
 	expect.Nil(t, err)
 	expect.True(t, status.Stopped())
 
@@ -384,4 +387,51 @@ func (DebuggerSuite) TestGetRegisterState(t *testing.T) {
 	// 0 0 0 0 0 0 0x40 0x80 0x5 0x40
 	expect.Equal(t, 0x80_40_00_00_00_00_00_00, u128.Low)
 	expect.Equal(t, 0x40_05, u128.High)
+}
+
+func (DebuggerSuite) TestBreakPoint(t *testing.T) {
+	reader, writer, err := os.Pipe()
+	expect.Nil(t, err)
+
+	defer reader.Close()
+
+	binaryPath := "test/targets/hello_world"
+
+	cmd := exec.Command(binaryPath)
+	cmd.Stderr = os.Stderr
+	cmd.Stdout = writer
+
+	db, err := StartAndAttachTo(cmd)
+	expect.Nil(t, err)
+	defer db.Close()
+
+	err = writer.Close()
+	expect.Nil(t, err)
+
+	offset, err := getEntryPointOffset(binaryPath)
+	expect.Nil(t, err)
+
+	loadAddress, err := getLoadAddress(cmd.Process.Pid, offset)
+	expect.Nil(t, err)
+
+	_, err = db.BreakPointSites.Set(loadAddress)
+	expect.Nil(t, err)
+
+	state, err := db.ResumeUntilSignal()
+	expect.Nil(t, err)
+	expect.True(t, state.Stopped())
+	expect.Equal(t, syscall.SIGTRAP, state.StopSignal())
+
+	pc, err := db.getProgramCounter()
+	expect.Nil(t, err)
+	expect.Equal(t, loadAddress, pc)
+
+	state, err = db.ResumeUntilSignal()
+	expect.Nil(t, err)
+	expect.True(t, state.Exited())
+	expect.Equal(t, 0, state.ExitStatus())
+
+	content, err := io.ReadAll(reader)
+	expect.Nil(t, err)
+	expect.Equal(t, "Hello world!\n", string(content))
 }
