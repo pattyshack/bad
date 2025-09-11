@@ -22,6 +22,12 @@ type StopPoint interface {
 
 	Enable() error
 	Disable() error
+
+	// If an enabled stop point is in the range
+	//    [startAddr, startAddr + len(memorySlice))
+	// replace the stop point bytes with the original data bytes in the
+	// memorySlice.
+	ReplaceStopPointBytes(startAddr VirtualAddress, memorySlice []byte)
 }
 
 type StopPointFactory interface {
@@ -103,6 +109,15 @@ func (set *StopPointSet) Remove(addr VirtualAddress) error {
 	return nil
 }
 
+func (set *StopPointSet) ReplaceStopPointBytes(
+	startAddr VirtualAddress,
+	memorySlice []byte,
+) {
+	for _, site := range set.stopPoints {
+		site.ReplaceStopPointBytes(startAddr, memorySlice)
+	}
+}
+
 type BreakPointSite struct {
 	tracer *ptrace.Tracer
 
@@ -175,6 +190,20 @@ func (site *BreakPointSite) swapData(newData byte) (byte, error) {
 	}
 
 	return originalData, nil
+}
+
+func (site *BreakPointSite) ReplaceStopPointBytes(
+	startAddr VirtualAddress,
+	memorySlice []byte,
+) {
+	if !site.isEnabled {
+		return
+	}
+
+	endAddr := startAddr + VirtualAddress(len(memorySlice))
+	if startAddr <= site.address && site.address < endAddr {
+		memorySlice[int(site.address-startAddr)] = site.originalData
+	}
 }
 
 type breakPointSiteFactory struct {

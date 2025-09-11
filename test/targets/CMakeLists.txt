@@ -12,8 +12,9 @@ function(add_test_asm_target name)
   target_compile_options(${name} PRIVATE -pie)
 endfunction()
 
-add_test_cpp_target(print_longdouble)
 add_test_cpp_target(hello_world)
+add_test_cpp_target(memory)
+add_test_cpp_target(print_longdouble)
 add_test_cpp_target(run_endlessly)
 
 add_test_asm_target(reg_write)

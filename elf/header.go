@@ -173,7 +173,7 @@ const (
 
 func (bits ProgramFlags) String() string {
 	if bits > 7 {
-		return fmt.Sprintf("%#x", bits)
+		return fmt.Sprintf("%#x", uint32(bits))
 	}
 
 	rwx := []byte{'-', '-', '-'}

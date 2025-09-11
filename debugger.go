@@ -8,7 +8,13 @@ import (
 	"strconv"
 	"syscall"
 
+	"golang.org/x/arch/x86/x86asm"
+
 	"github.com/pattyshack/bad/ptrace"
+)
+
+const (
+	maxX64InstructionLength = 15
 )
 
 var (
@@ -30,6 +36,18 @@ func ParseVirtualAddress(value string) (VirtualAddress, error) {
 	}
 
 	return VirtualAddress(addr), nil
+}
+
+type DisassembledInstruction struct {
+	Address VirtualAddress
+	x86asm.Inst
+}
+
+func (inst DisassembledInstruction) String() string {
+	return fmt.Sprintf(
+		"0x%016x: %s",
+		uint64(inst.Address),
+		x86asm.GNUSyntax(inst.Inst, uint64(inst.Address), nil))
 }
 
 type Debugger struct {
@@ -88,6 +106,10 @@ func StartCmdAndAttachTo(name string, args ...string) (*Debugger, error) {
 	cmd.Stderr = os.Stderr
 
 	return StartAndAttachTo(cmd)
+}
+
+func (db *Debugger) State() ProcessState {
+	return db.state
 }
 
 func (db *Debugger) resume() error {
@@ -406,6 +428,107 @@ func (db *Debugger) setProgramCounter(addr VirtualAddress) error {
 
 	db.state.NextInstructionAddress = addr
 	return nil
+}
+
+func (db *Debugger) ReadFromVirtualMemory(
+	addr VirtualAddress,
+	out []byte,
+) (
+	int,
+	error,
+) {
+	if !db.state.Stopped() {
+		return 0, fmt.Errorf(
+			"cannot read from virtual memory at %s. process %d not stopped (%s)",
+			addr,
+			db.Pid,
+			db.state)
+	}
+
+	count, err := db.tracer.ReadFromVirtualMemory(uintptr(addr), out)
+	if err != nil {
+		return 0, fmt.Errorf(
+			"failed to read from virtual memory at %s (%d) for process %d: %w",
+			addr,
+			len(out),
+			db.Pid,
+			err)
+	}
+
+	return count, nil
+}
+
+func (db *Debugger) WriteToVirtualMemory(
+	addr VirtualAddress,
+	data []byte,
+) (
+	int,
+	error,
+) {
+	if !db.state.Stopped() {
+		return 0, fmt.Errorf(
+			"cannot write to virtual memory at %s. process %d not stopped (%s)",
+			addr,
+			db.Pid,
+			db.state)
+	}
+
+	count, err := db.tracer.PokeData(uintptr(addr), data)
+	if err != nil {
+		return 0, fmt.Errorf(
+			"failed to write to virtual memory at %s (%d) for process %d: %w",
+			addr,
+			len(data),
+			db.Pid,
+			err)
+	}
+
+	return count, nil
+}
+
+func (db *Debugger) Disassemble(
+	startAddress VirtualAddress,
+	numInstructions int,
+) (
+	[]DisassembledInstruction,
+	error,
+) {
+	if numInstructions < 0 {
+		return nil, fmt.Errorf(
+			"Invalid number of instructions to disassemble: %d",
+			numInstructions)
+	} else if numInstructions == 0 {
+		return nil, nil
+	}
+
+	data := make([]byte, numInstructions*maxX64InstructionLength)
+	_, err := db.ReadFromVirtualMemory(startAddress, data)
+	if err != nil {
+		return nil, err
+	}
+
+	db.BreakPointSites.ReplaceStopPointBytes(startAddress, data)
+
+	address := startAddress
+	result := make([]DisassembledInstruction, 0, numInstructions)
+	for len(data) > 0 && len(result) < numInstructions {
+		inst, err := x86asm.Decode(data, 64)
+		if err != nil {
+			break
+		}
+
+		result = append(
+			result,
+			DisassembledInstruction{
+				Address: address,
+				Inst:    inst,
+			})
+
+		data = data[inst.Len:]
+		address += VirtualAddress(inst.Len)
+	}
+
+	return result, nil
 }
 
 func init() {

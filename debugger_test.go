@@ -1,6 +1,7 @@
 package bad
 
 import (
+	"encoding/binary"
 	"errors"
 	"io"
 	"math"
@@ -434,4 +435,64 @@ func (DebuggerSuite) TestBreakPoint(t *testing.T) {
 	content, err := io.ReadAll(reader)
 	expect.Nil(t, err)
 	expect.Equal(t, "Hello world!\n", string(content))
+}
+
+func (DebuggerSuite) TestReadWriteMemory(t *testing.T) {
+	reader, writer, err := os.Pipe()
+	expect.Nil(t, err)
+
+	defer reader.Close()
+
+	binaryPath := "test/targets/memory"
+
+	cmd := exec.Command(binaryPath)
+	cmd.Stderr = os.Stderr
+	cmd.Stdout = writer
+
+	db, err := StartAndAttachTo(cmd)
+	expect.Nil(t, err)
+	defer db.Close()
+
+	err = writer.Close()
+	expect.Nil(t, err)
+
+	state, err := db.ResumeUntilSignal()
+	expect.Nil(t, err)
+	expect.True(t, state.Stopped() && state.StopSignal() == syscall.SIGTRAP)
+
+	buffer := make([]byte, 1024)
+	n, err := reader.Read(buffer)
+	expect.Nil(t, err)
+	expect.Equal(t, 8, n)
+
+	addr := VirtualAddress(binary.LittleEndian.Uint64(buffer[:8]))
+
+	content := make([]byte, 8)
+	count, err := db.ReadFromVirtualMemory(addr, content)
+	expect.Nil(t, err)
+	expect.Equal(t, 8, count)
+	expect.Equal(t, 0xcafecafe, binary.LittleEndian.Uint64(content))
+
+	state, err = db.ResumeUntilSignal()
+	expect.Nil(t, err)
+	expect.True(t, state.Stopped() && state.StopSignal() == syscall.SIGTRAP)
+
+	n, err = reader.Read(buffer)
+	expect.Nil(t, err)
+	expect.Equal(t, 8, n)
+
+	addr = VirtualAddress(binary.LittleEndian.Uint64(buffer[:8]))
+
+	content = []byte("hello world!\x00")
+	count, err = db.WriteToVirtualMemory(addr, content)
+	expect.Nil(t, err)
+	expect.Equal(t, 13, count)
+
+	state, err = db.ResumeUntilSignal()
+	expect.Nil(t, err)
+	expect.True(t, state.Exited() && state.ExitStatus() == 0)
+
+	n, err = reader.Read(buffer)
+	expect.Nil(t, err)
+	expect.Equal(t, "hello world!", string(buffer[:n]))
 }

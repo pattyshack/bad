@@ -5,6 +5,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"strconv"
 	"strings"
 
 	"github.com/chzyer/readline"
@@ -55,6 +56,11 @@ var (
 			command:     registerCmds,
 		},
 		{
+			name:        "memory",
+			description: "     - commands for operating on virtual memory",
+			command:     memoryCmds,
+		},
+		{
 			name:        "breakpoint",
 			description: " - commands for operating on break points",
 			command:     breakPointCmds,
@@ -66,8 +72,15 @@ var (
 		},
 		{
 			name:        "step",
-			description: " - step over a single instruction",
+			description: "       - step over a single instruction",
 			command:     stepInstructionCmd{},
+		},
+		{
+			name: "disassemble",
+			description: " [<n=5>] [@<addr=pc>]\n" +
+				"    - disassemble <n> (default=5) instructions " +
+				"at @<addr> (default=pc)",
+			command: disassembleCmd{},
 		},
 	}
 
@@ -114,12 +127,48 @@ var (
 			command:     disableBreakPointCmd{},
 		},
 	}
+
+	memoryCmds = subCommands{
+		{
+			name: "read",
+			description: ":\n" +
+				"    read <address>                      " +
+				"- read 32 bytes from address\n" +
+				"    read <address> <n>                  " +
+				"- read n bytes from address",
+			command: readMemoryCmd{},
+		},
+		{
+			name: "write",
+			description: " <address> <byte 1> ... <byte n> " +
+				"- write space separated bytes to address",
+			command: writeMemoryCmd{},
+		},
+	}
 )
 
 type noOpCmd struct{}
 
 func (noOpCmd) run(db *bad.Debugger, args []string) error {
 	return nil
+}
+
+func printProcessState(db *bad.Debugger, state bad.ProcessState) {
+	fmt.Println(state)
+	if state.Stopped() {
+		instructions, err := db.Disassemble(state.NextInstructionAddress, 5)
+		if err != nil {
+			fmt.Printf(
+				"failed to disassemble instructions at %x: %s\n",
+				state.NextInstructionAddress,
+				err)
+			return
+		}
+
+		for _, inst := range instructions {
+			fmt.Println(inst)
+		}
+	}
 }
 
 type continueCmd struct{}
@@ -134,7 +183,7 @@ func (continueCmd) run(db *bad.Debugger, args []string) error {
 		return err
 	}
 
-	fmt.Println(state)
+	printProcessState(db, state)
 	return nil
 }
 
@@ -150,217 +199,67 @@ func (stepInstructionCmd) run(db *bad.Debugger, args []string) error {
 		return err
 	}
 
-	fmt.Println(state)
+	printProcessState(db, state)
 	return nil
 }
 
-type readRegisterCmd struct{}
+type disassembleCmd struct{}
 
-func (readRegisterCmd) run(db *bad.Debugger, args []string) error {
-	if len(args) > 0 && args[0] != "all" {
-		reg, ok := db.RegisterByName(args[0])
-		if !ok {
-			fmt.Println("Invalid register:", args[0])
-			return nil
-		}
+func (disassembleCmd) run(db *bad.Debugger, args []string) error {
+	addrStr := ""
+	addr := db.State().NextInstructionAddress
 
-		state, err := db.GetRegisterState()
-		if err != nil {
-			return err
-		}
-
-		fmt.Printf("%s: %s\n", reg.Name, state.Value(reg))
-		return nil
-	}
-
-	state, err := db.GetRegisterState()
-	if err != nil {
-		return err
-	}
-
-	for _, reg := range db.Registers {
-		// Skip printing general sub registers
-		if reg.Class == bad.GeneralRegister && reg.DwarfId == -1 {
-			continue
-		}
-
-		if len(args) == 0 && reg.Class != bad.GeneralRegister {
-			continue
-		}
-
-		name := reg.Name
-		if reg.Class == bad.FloatingPointRegister {
-			if strings.HasPrefix(name, "st") {
-				name = fmt.Sprintf("st%s/mm%s", name[2:], name[2:])
-			} else if strings.HasPrefix(name, "mm") {
-				continue
+	numInstStr := ""
+	numInst := 5
+	for _, arg := range args {
+		if strings.HasPrefix(arg, "@") {
+			if addrStr == "" {
+				addrStr = arg
+				val, err := strconv.ParseUint(arg[1:], 0, 64)
+				if err != nil {
+					fmt.Printf("Invalid @<addr> argument (%s): %s\n", arg, err)
+					return nil
+				}
+				addr = bad.VirtualAddress(val)
+			} else {
+				fmt.Println(
+					"Invalid arguments. multiple @<addr> specified.",
+					addrStr,
+					"vs",
+					arg)
+				return nil
+			}
+		} else {
+			if numInstStr == "" {
+				numInstStr = arg
+				val, err := strconv.ParseInt(arg, 0, 32)
+				if err != nil {
+					fmt.Printf("Invalid <n> argument (%s): %s\n", arg, err)
+					return nil
+				}
+				numInst = int(val)
+			} else {
+				fmt.Println(
+					"Invalid arguments. multiple <n> specified.",
+					numInstStr,
+					"vs",
+					arg)
+				return nil
 			}
 		}
-
-		format := "%s:\t\t%s\n"
-		if len(name) >= 7 {
-			format = "%s:\t%s\n"
-		}
-		fmt.Printf(format, name, state.Value(reg))
 	}
 
-	return nil
-}
-
-type writeRegisterCmd struct{}
-
-func (writeRegisterCmd) run(db *bad.Debugger, args []string) error {
-	if len(args) != 2 {
-		fmt.Println("Expected two arguments: <register> <value>")
-		return nil
-	}
-
-	reg, ok := db.RegisterByName(args[0])
-	if !ok {
-		fmt.Println("Invalid register:", args[0])
-		return nil
-	}
-
-	value, err := reg.ParseValue(args[1])
+	instructions, err := db.Disassemble(addr, numInst)
 	if err != nil {
-		fmt.Println("Invalid value:", err)
+		fmt.Printf(
+			"failed to disassemble instructions at %x: %s\n",
+			addr,
+			err)
 		return nil
 	}
 
-	state, err := db.GetRegisterState()
-	if err != nil {
-		return err
-	}
-
-	state, err = state.WithValue(reg, value)
-	if err != nil {
-		fmt.Println("Invalid value:", err)
-		return nil
-	}
-
-	return db.SetRegisterState(state)
-}
-
-type listBreakPointsCmd struct{}
-
-func (listBreakPointsCmd) run(db *bad.Debugger, args []string) error {
-	sites := db.BreakPointSites.List()
-	if len(sites) == 0 {
-		fmt.Println("No break points set")
-		return nil
-	}
-
-	fmt.Println("Current break points")
-	for _, site := range sites {
-		fmt.Println("  address =", site.Address(), " enabled =", site.IsEnabled())
-	}
-
-	return nil
-}
-
-type setBreakPointCmd struct{}
-
-func (setBreakPointCmd) run(db *bad.Debugger, args []string) error {
-	if len(args) < 1 {
-		fmt.Println("failed to set break point. address not specified")
-		return nil
-	}
-
-	addr, err := bad.ParseVirtualAddress(args[0])
-	if err != nil {
-		fmt.Println("failed to set break point:", err)
-		return nil
-	}
-
-	_, err = db.BreakPointSites.Set(addr)
-	if err != nil {
-		if errors.Is(err, bad.ErrInvalidStopPointAddress) {
-			fmt.Println(err)
-			return nil
-		}
-		return err
-	}
-
-	return nil
-}
-
-type removeBreakPointCmd struct{}
-
-func (removeBreakPointCmd) run(db *bad.Debugger, args []string) error {
-	if len(args) < 1 {
-		fmt.Println("failed to remove break point. address not specified")
-		return nil
-	}
-
-	addr, err := bad.ParseVirtualAddress(args[0])
-	if err != nil {
-		fmt.Println("failed to remove break point:", err)
-		return nil
-	}
-
-	err = db.BreakPointSites.Remove(addr)
-	if err != nil {
-		if errors.Is(err, bad.ErrInvalidStopPointAddress) {
-			fmt.Println(err)
-			return nil
-		}
-		return err
-	}
-
-	return nil
-}
-
-type enableBreakPointCmd struct{}
-
-func (enableBreakPointCmd) run(db *bad.Debugger, args []string) error {
-	if len(args) < 1 {
-		fmt.Println("failed to enable break point. address not specified")
-		return nil
-	}
-
-	addr, err := bad.ParseVirtualAddress(args[0])
-	if err != nil {
-		fmt.Println("failed to enable break point:", err)
-		return nil
-	}
-
-	site, ok := db.BreakPointSites.Get(addr)
-	if !ok {
-		fmt.Println("no break point found at", addr)
-		return nil
-	}
-
-	err = site.Enable()
-	if err != nil {
-		return err
-	}
-
-	return nil
-}
-
-type disableBreakPointCmd struct{}
-
-func (disableBreakPointCmd) run(db *bad.Debugger, args []string) error {
-	if len(args) < 1 {
-		fmt.Println("failed to disable break point. address not specified")
-		return nil
-	}
-
-	addr, err := bad.ParseVirtualAddress(args[0])
-	if err != nil {
-		fmt.Println("failed to disable break point:", err)
-		return nil
-	}
-
-	site, ok := db.BreakPointSites.Get(addr)
-	if !ok {
-		fmt.Println("no break point found at", addr)
-		return nil
-	}
-
-	err = site.Disable()
-	if err != nil {
-		return err
+	for _, inst := range instructions {
+		fmt.Println(inst)
 	}
 
 	return nil
@@ -426,7 +325,14 @@ func main() {
 			continue
 		}
 
-		args := strings.Split(line, " ")
+		args := []string{}
+		for idx, arg := range strings.Split(line, " ") {
+			if arg == "" && idx != 0 {
+				continue
+			}
+			args = append(args, arg)
+		}
+
 		if args[0] == "" {
 			fmt.Println("invalid command: (empty string)")
 		}

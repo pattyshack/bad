@@ -4,6 +4,7 @@ cmake_install.cmake
 Makefile
 
 hello_world
+memory
 print_longdouble
 reg_read
 reg_write

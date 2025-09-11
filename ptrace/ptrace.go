@@ -115,6 +115,7 @@ type Tracer struct {
 
 	peekDataOp
 	pokeDataOp
+	readMemoryOp
 }
 
 func (tracer *Tracer) registerOp(Type opType, op ptraceOp) {
@@ -153,6 +154,7 @@ func newTracer() *Tracer {
 
 	tracer.registerOp("peekData", &tracer.peekDataOp)
 	tracer.registerOp("pokeData", &tracer.pokeDataOp)
+	tracer.registerOp("readMemory", &tracer.readMemoryOp)
 
 	go tracer.processRequests()
 	return tracer
@@ -533,6 +535,48 @@ func (op peekDataOp) process(pid int, req request) response {
 }
 
 func (op peekDataOp) PeekData(addr uintptr, data []byte) (int, error) {
+	resp, err := op.send(request{
+		addr: addr,
+		data: data,
+	})
+
+	return resp.count, err
+}
+
+// This is equivalent to PeekData, but uses process_vm_readv instead of
+// PTRACE_PEEK_DATA for reading efficiency.  This is included as part of the
+// tracer since the read permission is governed by ptrace.
+//
+// NOTE: There's no corresponding WriteToVirtualMemory since process_vm_writev
+// does not support writing to protected memory areas.
+type readMemoryOp struct {
+	basePtraceOp
+}
+
+func (op readMemoryOp) process(pid int, req request) response {
+	count, err := readVirtualMemory(pid, req.addr, req.data)
+	if err != nil {
+		err = fmt.Errorf(
+			"failed to process_vm_readv at %d (%d) from process %d: %w",
+			req.addr,
+			len(req.data),
+			pid,
+			err)
+	}
+
+	return response{
+		count: count,
+		err:   err,
+	}
+}
+
+func (op readMemoryOp) ReadFromVirtualMemory(
+	addr uintptr,
+	data []byte,
+) (
+	int,
+	error,
+) {
 	resp, err := op.send(request{
 		addr: addr,
 		data: data,

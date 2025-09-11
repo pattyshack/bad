@@ -1,8 +1,13 @@
 package ptrace
 
 import (
+	"golang.org/x/sys/unix"
 	"syscall"
 	"unsafe"
+)
+
+const (
+	vmPageSize = 0x1000
 )
 
 // This matches user_regs_struct (64bit variant) defined in <sys/user.h>
@@ -84,4 +89,56 @@ func peekUserArea(pid int, offset uintptr) (uintptr, error) {
 
 func pokeUserArea(pid int, offset uintptr, data uintptr) error {
 	return ptrace(syscall.PTRACE_POKEUSR, pid, offset, data)
+}
+
+func readVirtualMemory(pid int, addr uintptr, data []byte) (int, error) {
+	if len(data) == 0 {
+		return 0, nil
+	}
+
+	localIovs := make([]unix.Iovec, 1)
+	localIovs[0].Base = &data[0]
+	localIovs[0].SetLen(len(data))
+
+	var remoteIovs []unix.RemoteIovec
+
+	remaining := len(data)
+
+	// NOTE: We need to ensure RemoteIovec entries are page aligned.
+	if addr%vmPageSize != 0 {
+		pageEndAddr := ((addr + vmPageSize - 1) / vmPageSize) * vmPageSize
+
+		size := int(pageEndAddr - addr)
+		if remaining < size {
+			size = remaining
+		}
+
+		remoteIovs = append(
+			remoteIovs,
+			unix.RemoteIovec{
+				Base: addr,
+				Len:  size,
+			})
+		remaining -= size
+		addr += uintptr(size)
+	}
+
+	for remaining > 0 {
+		size := remaining
+		if size > vmPageSize {
+			size = vmPageSize
+		}
+
+		remoteIovs = append(
+			remoteIovs,
+			unix.RemoteIovec{
+				Base: addr,
+				Len:  size,
+			})
+
+		remaining -= size
+		addr += uintptr(size)
+	}
+
+	return unix.ProcessVMReadv(pid, localIovs, remoteIovs, 0)
 }

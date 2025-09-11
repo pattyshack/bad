@@ -74,7 +74,7 @@ func (state ProcessState) String() string {
 		return fmt.Sprintf("process %d running", state.Pid)
 	} else if state.Stopped() {
 		return fmt.Sprintf(
-			"process %d stopped at %s with signal: %v\n",
+			"process %d stopped at %s with signal: %v",
 			state.Pid,
 			state.NextInstructionAddress,
 			state.StopSignal())
