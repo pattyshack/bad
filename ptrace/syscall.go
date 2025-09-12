@@ -8,6 +8,8 @@ import (
 
 const (
 	vmPageSize = 0x1000
+
+	O_EXITKILL = 0x00100000
 )
 
 // This matches user_regs_struct (64bit variant) defined in <sys/user.h>

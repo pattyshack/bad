@@ -3,19 +3,110 @@ package bad
 import (
 	"fmt"
 	"sort"
-
-	"github.com/pattyshack/bad/ptrace"
-)
-
-const (
-	int3Instruction = byte(0xcc)
 )
 
 var (
-	ErrInvalidStopPointAddress = fmt.Errorf("invalid stop point address")
+	ErrInvalidArgument = fmt.Errorf("invalid argument")
 )
 
+type StopPointKind string
+
+const (
+	SoftwareKind = StopPointKind("software")
+	HardwareKind = StopPointKind("hardware")
+)
+
+type StopPointMode string
+
+const (
+	WriteMode     = StopPointMode("write")
+	ReadWriteMode = StopPointMode("read/write")
+	ExecuteMode   = StopPointMode("execute")
+)
+
+type StopPointType struct {
+	Kind      StopPointKind
+	Mode      StopPointMode
+	WatchSize int // 1, 2, 4, 8
+}
+
+func (t StopPointType) String() string {
+	stopPoint := ""
+	if t.Mode == ExecuteMode && t.WatchSize == 1 {
+		stopPoint = " break point site"
+	} else {
+		stopPoint = " " + string(t.Mode) + " watch point"
+	}
+
+	size := ""
+	if t.WatchSize > 1 {
+		size = fmt.Sprintf(" (size=%d)", t.WatchSize)
+	}
+
+	return string(t.Kind) + stopPoint + size
+}
+
+func (t StopPointType) Validate(address VirtualAddress) error {
+	switch t.Kind {
+	case HardwareKind:
+		// do nothing
+	case SoftwareKind:
+		if t.Mode != ExecuteMode {
+			return fmt.Errorf(
+				"%w. invalid software break point site mode (%s)",
+				ErrInvalidArgument,
+				t.Mode)
+		}
+
+		if t.WatchSize != 1 {
+			return fmt.Errorf(
+				"%w. invalid software break point site watch size (%d)",
+				ErrInvalidArgument,
+				t.WatchSize)
+		}
+	default:
+		return fmt.Errorf(
+			"%w. invalid stop point kind (%s)",
+			ErrInvalidArgument,
+			t.Kind)
+	}
+
+	switch t.Mode {
+	case WriteMode, ReadWriteMode, ExecuteMode:
+		// do nothing
+	default:
+		return fmt.Errorf(
+			"%w. invalid stop point mode (%s)",
+			ErrInvalidArgument,
+			t.Mode)
+	}
+
+	switch t.WatchSize {
+	case 1, 2, 4, 8:
+		if uint64(address)%uint64(t.WatchSize) != 0 {
+			return fmt.Errorf(
+				"%w. address (0x%x) not aligned with watch size (%d)",
+				ErrInvalidArgument,
+				address,
+				t.WatchSize)
+		}
+	default:
+		return fmt.Errorf(
+			"%w. invalid watch size (%d)",
+			ErrInvalidArgument,
+			t.WatchSize)
+	}
+
+	return nil
+}
+
+type StopPointOptions struct {
+	Type StopPointType
+}
+
 type StopPoint interface {
+	Type() StopPointType
+
 	Address() VirtualAddress
 
 	IsEnabled() bool
@@ -28,24 +119,124 @@ type StopPoint interface {
 	// replace the stop point bytes with the original data bytes in the
 	// memorySlice.
 	ReplaceStopPointBytes(startAddr VirtualAddress, memorySlice []byte)
+
+	// Called by stop point set on Remove.  deallocate must disable the stop
+	// point and perform necessary cleanup.
+	deallocate() error
 }
 
-type StopPointFactory interface {
-	Type() string
+type StopPointAllocator interface {
+	SetDebugger(debugger *Debugger)
 
-	newStopPoint(VirtualAddress) StopPoint
+	Allocate(address VirtualAddress, options StopPointOptions) (StopPoint, error)
+}
+
+type stopPointAllocator struct {
+	software softwareBreakPointSiteAllocator
+	hardware hardwareStopPointAllocator
+}
+
+func NewStopPointAllocator() StopPointAllocator {
+	return &stopPointAllocator{}
+}
+
+func (allocator *stopPointAllocator) SetDebugger(debugger *Debugger) {
+	allocator.software.SetDebugger(debugger)
+	allocator.hardware.SetDebugger(debugger)
+}
+
+func (allocator *stopPointAllocator) Allocate(
+	address VirtualAddress,
+	options StopPointOptions,
+) (
+	StopPoint,
+	error,
+) {
+	if options.Type.Kind == SoftwareKind {
+		return allocator.software.Allocate(address, options)
+	} else {
+		return allocator.hardware.Allocate(address, options)
+	}
+}
+
+type breakPointSiteAllocator struct {
+	base StopPointAllocator
+}
+
+func (allocator breakPointSiteAllocator) SetDebugger(debugger *Debugger) {
+	allocator.base.SetDebugger(debugger)
+}
+
+func (allocator breakPointSiteAllocator) Allocate(
+	address VirtualAddress,
+	options StopPointOptions,
+) (
+	StopPoint,
+	error,
+) {
+	if options.Type.Mode != ExecuteMode {
+		return nil, fmt.Errorf(
+			"%w. invalid break point site mode (%s)",
+			ErrInvalidArgument,
+			options.Type.Mode)
+	}
+
+	if options.Type.WatchSize != 1 {
+		return nil, fmt.Errorf(
+			"%w. invalid break point site watch size (%d)",
+			ErrInvalidArgument,
+			options.Type.WatchSize)
+	}
+
+	return allocator.base.Allocate(address, options)
+}
+
+type watchPointAllocator struct {
+	base StopPointAllocator
+}
+
+func (allocator watchPointAllocator) SetDebugger(debugger *Debugger) {
+	allocator.base.SetDebugger(debugger)
+}
+
+func (allocator watchPointAllocator) Allocate(
+	address VirtualAddress,
+	options StopPointOptions,
+) (
+	StopPoint,
+	error,
+) {
+	if options.Type.Kind != HardwareKind {
+		return nil, fmt.Errorf(
+			"%w. invalid watch point kind (%s)",
+			ErrInvalidArgument,
+			options.Type.Kind)
+	}
+
+	return allocator.base.Allocate(address, options)
 }
 
 type StopPointSet struct {
-	StopPointFactory
+	allocator StopPointAllocator
 
 	stopPoints map[VirtualAddress]StopPoint
 }
 
-func newStopPointSet(factory StopPointFactory) *StopPointSet {
+func NewBreakPointSites(allocator StopPointAllocator) *StopPointSet {
 	return &StopPointSet{
-		StopPointFactory: factory,
-		stopPoints:       map[VirtualAddress]StopPoint{},
+		allocator: breakPointSiteAllocator{
+			base: allocator,
+		},
+		stopPoints: map[VirtualAddress]StopPoint{},
+	}
+}
+
+func NewWatchPoints(allocator StopPointAllocator) *StopPointSet {
+	return &StopPointSet{
+		allocator: watchPointAllocator{
+			base: allocator,
+		},
+		stopPoints: map[VirtualAddress]StopPoint{},
 	}
 }
 
@@ -68,21 +259,33 @@ func (set *StopPointSet) Get(addr VirtualAddress) (StopPoint, bool) {
 	return stopPoint, ok
 }
 
-func (set *StopPointSet) Set(addr VirtualAddress) (StopPoint, error) {
+func (set *StopPointSet) Set(
+	addr VirtualAddress,
+	options StopPointOptions,
+) (
+	StopPoint,
+	error,
+) {
 	_, ok := set.stopPoints[addr]
 	if ok {
 		return nil, fmt.Errorf(
-			"%w. %s at %s already exist",
-			ErrInvalidStopPointAddress,
-			set.Type(),
+			"%w. stop point at %s already exist",
+			ErrInvalidArgument,
 			addr)
 	}
 
-	stopPoint := set.newStopPoint(addr)
-
-	err := stopPoint.Enable()
+	stopPoint, err := set.allocator.Allocate(addr, options)
 	if err != nil {
-		return nil, fmt.Errorf("failed to set %s at %s: %w", set.Type(), addr, err)
+		return nil, fmt.Errorf("failed to create stop point at %s: %w", addr, err)
+	}
+
+	err = stopPoint.Enable()
+	if err != nil {
+		return nil, fmt.Errorf(
+			"failed to set %s at %s: %w",
+			options.Type,
+			addr,
+			err)
 	}
 
 	set.stopPoints[addr] = stopPoint
@@ -94,15 +297,14 @@ func (set *StopPointSet) Remove(addr VirtualAddress) error {
 	stopPoint, ok := set.stopPoints[addr]
 	if !ok {
 		return fmt.Errorf(
-			"%w. no %s found at %s",
-			ErrInvalidStopPointAddress,
-			set.Type(),
+			"%w. no stop point found at %s",
+			ErrInvalidArgument,
 			addr)
 	}
 
-	err := stopPoint.Disable()
+	err := stopPoint.deallocate()
 	if err != nil {
-		return fmt.Errorf("cannot remove %s at %s: %w", set.Type(), addr, err)
+		return fmt.Errorf("cannot remove %s at %s: %w", stopPoint.Type(), addr, err)
 	}
 
 	delete(set.stopPoints, addr)
@@ -116,115 +318,4 @@ func (set *StopPointSet) ReplaceStopPointBytes(
 	for _, site := range set.stopPoints {
 		site.ReplaceStopPointBytes(startAddr, memorySlice)
 	}
-}
-
-type BreakPointSite struct {
-	tracer *ptrace.Tracer
-
-	address      VirtualAddress
-	isEnabled    bool
-	originalData byte
-}
-
-func (site *BreakPointSite) Address() VirtualAddress {
-	return site.address
-}
-
-func (site *BreakPointSite) IsEnabled() bool {
-	return site.isEnabled
-}
-
-func (site *BreakPointSite) Enable() error {
-	if site.isEnabled {
-		return nil
-	}
-
-	originalData, err := site.swapData(int3Instruction)
-	if err != nil {
-		return fmt.Errorf("failed to enable break point site: %w", err)
-	}
-
-	site.isEnabled = true
-	site.originalData = originalData
-	return nil
-}
-
-func (site *BreakPointSite) Disable() error {
-	if !site.isEnabled {
-		return nil
-	}
-
-	_, err := site.swapData(site.originalData)
-	if err != nil {
-		return fmt.Errorf("failed to disable break point site: %w", err)
-	}
-
-	site.isEnabled = false
-	return nil
-}
-
-func (site *BreakPointSite) swapData(newData byte) (byte, error) {
-	buffer := make([]byte, 1)
-
-	count, err := site.tracer.PeekData(uintptr(site.address), buffer)
-	if err != nil {
-		return 0, err
-	} else if count != 1 {
-		return 0, fmt.Errorf(
-			"failed to peek data at %s. incorrect number of bytes peeked (%d != 1)",
-			site.address,
-			count)
-	}
-
-	originalData := buffer[0]
-	buffer[0] = newData
-
-	count, err = site.tracer.PokeData(uintptr(site.address), buffer)
-	if err != nil {
-		return 0, err
-	} else if count != 1 {
-		return 0, fmt.Errorf(
-			"failed to poke data at %s. incorrect number of bytes poked (%d != 1)",
-			site.address,
-			count)
-	}
-
-	return originalData, nil
-}
-
-func (site *BreakPointSite) ReplaceStopPointBytes(
-	startAddr VirtualAddress,
-	memorySlice []byte,
-) {
-	if !site.isEnabled {
-		return
-	}
-
-	endAddr := startAddr + VirtualAddress(len(memorySlice))
-	if startAddr <= site.address && site.address < endAddr {
-		memorySlice[int(site.address-startAddr)] = site.originalData
-	}
-}
-
-type breakPointSiteFactory struct {
-	tracer *ptrace.Tracer
-}
-
-func (breakPointSiteFactory) Type() string {
-	return "BreakPointSite"
-}
-
-func (factory breakPointSiteFactory) newStopPoint(
-	addr VirtualAddress,
-) StopPoint {
-	return &BreakPointSite{
-		tracer:       factory.tracer,
-		address:      addr,
-		isEnabled:    false,
-		originalData: 0,
-	}
-}
-
-func NewBreakPointSites(tracer *ptrace.Tracer) *StopPointSet {
-	return newStopPointSet(breakPointSiteFactory{tracer})
 }

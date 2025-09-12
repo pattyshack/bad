@@ -390,7 +390,7 @@ func (DebuggerSuite) TestGetRegisterState(t *testing.T) {
 	expect.Equal(t, 0x40_05, u128.High)
 }
 
-func (DebuggerSuite) TestBreakPoint(t *testing.T) {
+func (DebuggerSuite) TestSoftwareBreakPointSite(t *testing.T) {
 	reader, writer, err := os.Pipe()
 	expect.Nil(t, err)
 
@@ -415,7 +415,7 @@ func (DebuggerSuite) TestBreakPoint(t *testing.T) {
 	loadAddress, err := getLoadAddress(cmd.Process.Pid, offset)
 	expect.Nil(t, err)
 
-	_, err = db.BreakPointSites.Set(loadAddress)
+	_, err = db.BreakPointSites.Set(loadAddress, SoftwareBreakPointSiteOptions())
 	expect.Nil(t, err)
 
 	state, err := db.ResumeUntilSignal()
@@ -435,6 +435,126 @@ func (DebuggerSuite) TestBreakPoint(t *testing.T) {
 	content, err := io.ReadAll(reader)
 	expect.Nil(t, err)
 	expect.Equal(t, "Hello world!\n", string(content))
+}
+
+func (DebuggerSuite) TestHardwareBreakPointEvadesMemoryChecksum(t *testing.T) {
+	reader, writer, err := os.Pipe()
+	expect.Nil(t, err)
+
+	defer reader.Close()
+
+	cmd := exec.Command("test/targets/anti_debugger")
+	cmd.Stderr = os.Stderr
+	cmd.Stdout = writer
+
+	db, err := StartAndAttachTo(cmd)
+	expect.Nil(t, err)
+	defer db.Close()
+
+	err = writer.Close()
+	expect.Nil(t, err)
+
+	state, err := db.ResumeUntilSignal()
+	expect.Nil(t, err)
+	expect.True(t, state.Stopped() && state.StopSignal() == syscall.SIGTRAP)
+
+	buffer := make([]byte, 1024)
+
+	n, err := reader.Read(buffer)
+	expect.Nil(t, err)
+	expect.Equal(t, 8, n)
+
+	addr := VirtualAddress(binary.LittleEndian.Uint64(buffer[:8]))
+
+	_, err = db.BreakPointSites.Set(addr, SoftwareBreakPointSiteOptions())
+	expect.Nil(t, err)
+
+	state, err = db.ResumeUntilSignal()
+	expect.Nil(t, err)
+	expect.True(t, state.Stopped() && state.StopSignal() == syscall.SIGTRAP)
+
+	n, err = reader.Read(buffer)
+	expect.Nil(t, err)
+	expect.Equal(t, "Putting pepperoni on pizza...\n", string(buffer[:n]))
+
+	err = db.BreakPointSites.Remove(addr)
+	expect.Nil(t, err)
+
+	_, err = db.BreakPointSites.Set(addr, HardwareBreakPointSiteOptions())
+	expect.Nil(t, err)
+
+	state, err = db.ResumeUntilSignal()
+	expect.Nil(t, err)
+	expect.True(t, state.Stopped() && state.StopSignal() == syscall.SIGTRAP)
+
+	// verify we're at break point address
+	expect.Equal(t, state.NextInstructionAddress, addr)
+
+	state, err = db.ResumeUntilSignal()
+	expect.Nil(t, err)
+	expect.True(t, state.Stopped() && state.StopSignal() == syscall.SIGTRAP)
+
+	n, err = reader.Read(buffer)
+	expect.Nil(t, err)
+	expect.Equal(t, "Putting pineapple on pizza...\n", string(buffer[:n]))
+}
+
+func (DebuggerSuite) TestWatchPoint(t *testing.T) {
+	reader, writer, err := os.Pipe()
+	expect.Nil(t, err)
+
+	defer reader.Close()
+
+	cmd := exec.Command("test/targets/anti_debugger")
+	cmd.Stderr = os.Stderr
+	cmd.Stdout = writer
+
+	db, err := StartAndAttachTo(cmd)
+	expect.Nil(t, err)
+	defer db.Close()
+
+	err = writer.Close()
+	expect.Nil(t, err)
+
+	state, err := db.ResumeUntilSignal()
+	expect.Nil(t, err)
+	expect.True(t, state.Stopped() && state.StopSignal() == syscall.SIGTRAP)
+
+	buffer := make([]byte, 1024)
+
+	n, err := reader.Read(buffer)
+	expect.Nil(t, err)
+	expect.Equal(t, 8, n)
+
+	addr := VirtualAddress(binary.LittleEndian.Uint64(buffer[:8]))
+
+	_, err = db.WatchPoints.Set(addr, HardwareWatchPointOptions(ReadWriteMode, 1))
+	expect.Nil(t, err)
+
+	state, err = db.ResumeUntilSignal()
+	expect.Nil(t, err)
+	expect.True(t, state.Stopped() && state.StopSignal() == syscall.SIGTRAP)
+
+	// NOTE: force anti_debugger to read the original checksum
+	state, err = db.StepInstruction()
+	expect.Nil(t, err)
+	expect.True(t, state.Stopped() && state.StopSignal() == syscall.SIGTRAP)
+
+	_, err = db.BreakPointSites.Set(addr, SoftwareBreakPointSiteOptions())
+	expect.Nil(t, err)
+
+	// Hit the software breakpoint
+	state, err = db.ResumeUntilSignal()
+	expect.Nil(t, err)
+	expect.True(t, state.Stopped() && state.StopSignal() == syscall.SIGTRAP)
+
+	state, err = db.ResumeUntilSignal()
+	expect.Nil(t, err)
+	expect.True(t, state.Stopped() && state.StopSignal() == syscall.SIGTRAP)
+
+	n, err = reader.Read(buffer)
+	expect.Nil(t, err)
+	expect.Equal(t, "Putting pineapple on pizza...\n", string(buffer[:n]))
 }
 
 func (DebuggerSuite) TestReadWriteMemory(t *testing.T) {

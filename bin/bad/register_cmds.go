@@ -7,9 +7,7 @@ import (
 	"github.com/pattyshack/bad"
 )
 
-type readRegisterCmd struct{}
-
-func (readRegisterCmd) run(db *bad.Debugger, args []string) error {
+func readRegister(db *bad.Debugger, args []string) error {
 	if len(args) > 0 && args[0] != "all" {
 		reg, ok := db.RegisterByName(args[0])
 		if !ok {
@@ -60,9 +58,7 @@ func (readRegisterCmd) run(db *bad.Debugger, args []string) error {
 	return nil
 }
 
-type writeRegisterCmd struct{}
-
-func (writeRegisterCmd) run(db *bad.Debugger, args []string) error {
+func writeRegister(db *bad.Debugger, args []string) error {
 	if len(args) != 2 {
 		fmt.Println("Expected two arguments: <register> <value>")
 		return nil

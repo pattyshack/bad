@@ -7,9 +7,7 @@ import (
 	"github.com/pattyshack/bad"
 )
 
-type readMemoryCmd struct{}
-
-func (readMemoryCmd) run(db *bad.Debugger, args []string) error {
+func readMemory(db *bad.Debugger, args []string) error {
 	if len(args) == 0 {
 		fmt.Println("failed to read from memory. address not specified")
 		return nil
@@ -70,9 +68,7 @@ func (readMemoryCmd) run(db *bad.Debugger, args []string) error {
 	return nil
 }
 
-type writeMemoryCmd struct{}
-
-func (writeMemoryCmd) run(db *bad.Debugger, args []string) error {
+func writeMemory(db *bad.Debugger, args []string) error {
 	if len(args) == 0 {
 		fmt.Println("failed to write to memory. address not specified.")
 		return nil

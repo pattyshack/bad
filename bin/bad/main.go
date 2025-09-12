@@ -14,7 +14,7 @@ import (
 )
 
 type command interface {
-	run(*bad.Debugger, []string) error
+	run([]string) error
 }
 
 type namedCommand struct {
@@ -25,7 +25,7 @@ type namedCommand struct {
 
 type subCommands []namedCommand
 
-func (cmds subCommands) run(db *bad.Debugger, args []string) error {
+func (cmds subCommands) run(args []string) error {
 	if len(args) == 0 || strings.HasPrefix("help", args[0]) {
 		cmds.printAvailableCommands()
 		return nil
@@ -33,7 +33,7 @@ func (cmds subCommands) run(db *bad.Debugger, args []string) error {
 
 	for _, cmd := range cmds {
 		if strings.HasPrefix(cmd.name, args[0]) {
-			return cmd.run(db, args[1:])
+			return cmd.run(args[1:])
 		}
 	}
 
@@ -48,8 +48,76 @@ func (cmds subCommands) printAvailableCommands() {
 	}
 }
 
-var (
-	topCmds = subCommands{
+type cmdFunc func(*bad.Debugger, []string) error
+
+type funcCmd struct {
+	debugger *bad.Debugger
+	cmdFunc
+}
+
+func newFuncCmd(debugger *bad.Debugger, f cmdFunc) funcCmd {
+	return funcCmd{
+		debugger: debugger,
+		cmdFunc:  f,
+	}
+}
+
+func (cmd funcCmd) run(args []string) error {
+	return cmd.cmdFunc(cmd.debugger, args)
+}
+
+type runCmd func([]string) error
+
+func (f runCmd) run(args []string) error {
+	return f(args)
+}
+
+func initializeCommands(debugger *bad.Debugger) command {
+	registerCmds := subCommands{
+		{
+			name: "read",
+			description: ":\n" +
+				"    read                   - read general registers\n" +
+				"    read all               - read all registers\n" +
+				"    read <register>        - read the named register",
+			command: newFuncCmd(debugger, readRegister),
+		},
+		{
+			name:        "write",
+			description: " <register> <value> - write value to the named register",
+			command:     newFuncCmd(debugger, writeRegister),
+		},
+	}
+
+	breakPointCmds := stopPointCommands{
+		stopPoints:    debugger.BreakPointSites,
+		isBreakPoints: true,
+	}
+
+	watchPointCmds := stopPointCommands{
+		stopPoints:    debugger.WatchPoints,
+		isBreakPoints: false,
+	}
+
+	memoryCmds := subCommands{
+		{
+			name: "read",
+			description: ":\n" +
+				"    read <address>                      " +
+				"- read 32 bytes from address\n" +
+				"    read <address> <n>                  " +
+				"- read n bytes from address",
+			command: newFuncCmd(debugger, readMemory),
+		},
+		{
+			name: "write",
+			description: " <address> <byte 1> ... <byte n> " +
+				"- write space separated bytes to address",
+			command: newFuncCmd(debugger, writeMemory),
+		},
+	}
+
+	return subCommands{
 		{
 			name:        "register",
 			description: "   - commands for operating on registers",
@@ -63,89 +131,33 @@ var (
 		{
 			name:        "breakpoint",
 			description: " - commands for operating on break points",
-			command:     breakPointCmds,
+			command:     breakPointCmds.SubCommands(),
+		},
+		{
+			name:        "watchpoint",
+			description: " - commands for operating on watch points",
+			command:     watchPointCmds.SubCommands(),
 		},
 		{
 			name:        "continue",
 			description: "   - resume the process",
-			command:     continueCmd{},
+			command:     newFuncCmd(debugger, resume),
 		},
 		{
 			name:        "step",
 			description: "       - step over a single instruction",
-			command:     stepInstructionCmd{},
+			command:     newFuncCmd(debugger, stepInstruction),
 		},
 		{
 			name: "disassemble",
 			description: " [<n=5>] [@<addr=pc>]\n" +
 				"    - disassemble <n> (default=5) instructions " +
 				"at @<addr> (default=pc)",
-			command: disassembleCmd{},
+			command: newFuncCmd(debugger, disassemble),
 		},
 	}
 
-	registerCmds = subCommands{
-		{
-			name: "read",
-			description: ":\n" +
-				"    read                   - read general registers\n" +
-				"    read all               - read all registers\n" +
-				"    read <register>        - read the named register",
-			command: readRegisterCmd{},
-		},
-		{
-			name:        "write",
-			description: " <register> <value> - write value to the named register",
-			command:     writeRegisterCmd{},
-		},
-	}
-
-	breakPointCmds = subCommands{
-		{
-			name:        "list",
-			description: "              - list all break points",
-			command:     listBreakPointsCmd{},
-		},
-		{
-			name:        "set",
-			description: " <address>     - create break point",
-			command:     setBreakPointCmd{},
-		},
-		{
-			name:        "remove",
-			description: " <address>  - remove break point",
-			command:     removeBreakPointCmd{},
-		},
-		{
-			name:        "enable",
-			description: " <address>  - enable break point",
-			command:     enableBreakPointCmd{},
-		},
-		{
-			name:        "disable",
-			description: " <address> - disable break point",
-			command:     disableBreakPointCmd{},
-		},
-	}
-
-	memoryCmds = subCommands{
-		{
-			name: "read",
-			description: ":\n" +
-				"    read <address>                      " +
-				"- read 32 bytes from address\n" +
-				"    read <address> <n>                  " +
-				"- read n bytes from address",
-			command: readMemoryCmd{},
-		},
-		{
-			name: "write",
-			description: " <address> <byte 1> ... <byte n> " +
-				"- write space separated bytes to address",
-			command: writeMemoryCmd{},
-		},
-	}
-)
+}
 
 type noOpCmd struct{}
 
@@ -171,9 +183,7 @@ func printProcessState(db *bad.Debugger, state bad.ProcessState) {
 	}
 }
 
-type continueCmd struct{}
-
-func (continueCmd) run(db *bad.Debugger, args []string) error {
+func resume(db *bad.Debugger, args []string) error {
 	state, err := db.ResumeUntilSignal()
 	if err != nil {
 		if errors.Is(err, bad.ErrProcessExited) {
@@ -187,9 +197,7 @@ func (continueCmd) run(db *bad.Debugger, args []string) error {
 	return nil
 }
 
-type stepInstructionCmd struct{}
-
-func (stepInstructionCmd) run(db *bad.Debugger, args []string) error {
+func stepInstruction(db *bad.Debugger, args []string) error {
 	state, err := db.StepInstruction()
 	if err != nil {
 		if errors.Is(err, bad.ErrProcessExited) {
@@ -203,9 +211,7 @@ func (stepInstructionCmd) run(db *bad.Debugger, args []string) error {
 	return nil
 }
 
-type disassembleCmd struct{}
-
-func (disassembleCmd) run(db *bad.Debugger, args []string) error {
+func disassemble(db *bad.Debugger, args []string) error {
 	addrStr := ""
 	addr := db.State().NextInstructionAddress
 
@@ -297,6 +303,8 @@ func main() {
 		}
 	}()
 
+	topCmds := initializeCommands(db)
+
 	fmt.Println("attached to process", db.Pid)
 
 	rl, err := readline.New("bad > ")
@@ -337,7 +345,7 @@ func main() {
 			fmt.Println("invalid command: (empty string)")
 		}
 
-		err = topCmds.run(db, args)
+		err = topCmds.run(args)
 		if err != nil {
 			panic(err)
 		}

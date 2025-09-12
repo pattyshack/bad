@@ -56,6 +56,7 @@ type Debugger struct {
 	*RegisterSet
 
 	BreakPointSites *StopPointSet
+	WatchPoints     *StopPointSet
 
 	Pid         int
 	ownsProcess bool
@@ -64,19 +65,34 @@ type Debugger struct {
 }
 
 func newDebugger(tracer *ptrace.Tracer, ownsProcess bool) (*Debugger, error) {
+	allocator := NewStopPointAllocator()
+
 	db := &Debugger{
 		tracer:          tracer,
 		RegisterSet:     NewRegisterSet(),
-		BreakPointSites: NewBreakPointSites(tracer),
+		BreakPointSites: NewBreakPointSites(allocator),
+		WatchPoints:     NewWatchPoints(allocator),
 		Pid:             tracer.Pid(),
 		ownsProcess:     ownsProcess,
 		state:           newRunningProcessState(tracer.Pid()),
 	}
 
+	allocator.SetDebugger(db)
+
 	_, err := db.waitForSignal()
 	if err != nil {
-		_ = tracer.Detach()
+		_ = db.Close()
 		return nil, err
+	}
+
+	if ownsProcess {
+		err = tracer.SetOptions(ptrace.O_EXITKILL)
+		if err != nil {
+			_ = db.Close()
+			return nil, fmt.Errorf(
+				"failed to set PTRACE_O_EXITKILL on process %d",
+				tracer.Pid())
+		}
 	}
 
 	return db, nil
