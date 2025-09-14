@@ -5,6 +5,7 @@ import (
 )
 
 const (
+	debugStatusRegister  = "dr6"
 	debugControlRegister = "dr7"
 )
 
@@ -14,20 +15,32 @@ func HardwareWatchPointOptions(
 ) StopPointOptions {
 	return StopPointOptions{
 		Type: StopPointType{
-			Kind:      HardwareKind,
-			Mode:      mode,
-			WatchSize: watchSize,
+			IsBreakPoint: false,
+			Kind:         HardwareKind,
+			Mode:         mode,
+			WatchSize:    watchSize,
 		},
 	}
 }
 
 func HardwareBreakPointSiteOptions() StopPointOptions {
-	return HardwareWatchPointOptions(ExecuteMode, 1)
+	return StopPointOptions{
+		Type: StopPointType{
+			IsBreakPoint: true,
+			Kind:         HardwareKind,
+			Mode:         ExecuteMode,
+			WatchSize:    1,
+		},
+	}
 }
 
 type hardwareStopPointAllocator struct {
 	debugger   *Debugger
 	stopPoints [4]*HardwareStopPoint
+}
+
+func newHardwareStopPointAllocator() *hardwareStopPointAllocator {
+	return &hardwareStopPointAllocator{}
 }
 
 func (allocator *hardwareStopPointAllocator) SetDebugger(debugger *Debugger) {
@@ -62,6 +75,14 @@ func (allocator *hardwareStopPointAllocator) Allocate(
 				isEnabled:     false,
 			}
 			allocator.stopPoints[idx] = sp
+
+			err = allocator.updateStopPointData(sp)
+			if err != nil {
+				return nil, fmt.Errorf(
+					"failed to allocate hardware stop point: %w",
+					err)
+			}
+
 			return sp, nil
 		}
 	}
@@ -199,6 +220,61 @@ func (allocator *hardwareStopPointAllocator) updateDebugRegisters() error {
 	return nil
 }
 
+func (allocator *hardwareStopPointAllocator) updateStopPointData(
+	sp *HardwareStopPoint,
+) error {
+	content := make([]byte, sp.WatchSize)
+	n, err := allocator.debugger.ReadFromVirtualMemory(sp.address, content)
+	if err != nil {
+		return fmt.Errorf("failed to update hardware stop point data: %w", err)
+	}
+
+	if n != sp.WatchSize {
+		return fmt.Errorf(
+			"failed to update hardware stop point data. "+
+				"incorrect number of bytes read (%d != %d)",
+			sp.WatchSize,
+			n)
+	}
+
+	sp.previousData = sp.data
+	sp.data = content
+	return nil
+}
+
+func (allocator *hardwareStopPointAllocator) ListTriggered() (
+	[]StopPoint,
+	error,
+) {
+	state, err := allocator.debugger.GetRegisterState()
+	if err != nil {
+		return nil, fmt.Errorf("failed to list triggered stop points: %w", err)
+	}
+
+	reg, ok := allocator.debugger.RegisterByName(debugStatusRegister)
+	if !ok {
+		panic("should never happen")
+	}
+
+	status := state.Value(reg).ToUint64()
+	triggered := []StopPoint{}
+	for idx, sp := range allocator.stopPoints {
+		if status&uint64(1<<idx) > 0 {
+			if sp == nil {
+				panic("should never happen")
+			}
+			triggered = append(triggered, sp)
+
+			err = allocator.updateStopPointData(sp)
+			if err != nil {
+				return nil, fmt.Errorf("failed to list triggered stop points: %w", err)
+			}
+		}
+	}
+
+	return triggered, nil
+}
+
 type HardwareStopPoint struct {
 	allocator *hardwareStopPointAllocator
 
@@ -206,6 +282,9 @@ type HardwareStopPoint struct {
 
 	address   VirtualAddress
 	isEnabled bool
+
+	previousData []byte
+	data         []byte
 }
 
 func (sp *HardwareStopPoint) Type() StopPointType {
@@ -265,4 +344,12 @@ func (HardwareStopPoint) ReplaceStopPointBytes(
 	memorySlice []byte,
 ) {
 	// do nothing
+}
+
+func (sp *HardwareStopPoint) PreviousData() []byte {
+	return sp.previousData
+}
+
+func (sp *HardwareStopPoint) Data() []byte {
+	return sp.data
 }

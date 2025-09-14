@@ -6,10 +6,13 @@ import (
 	"unsafe"
 )
 
+type Options int
+
 const (
 	vmPageSize = 0x1000
 
-	O_EXITKILL = 0x00100000
+	O_EXITKILL     = Options(unix.PTRACE_O_EXITKILL)
+	O_TRACESYSGOOD = Options(unix.PTRACE_O_TRACESYSGOOD)
 )
 
 // This matches user_regs_struct (64bit variant) defined in <sys/user.h>
@@ -53,6 +56,8 @@ type User struct {
 	UDebugReg  [8]uint64
 }
 
+type SigInfo = unix.Siginfo
+
 func ptrace(request int, pid int, addr uintptr, data uintptr) error {
 	_, _, err := syscall.Syscall6(
 		syscall.SYS_PTRACE,
@@ -91,6 +96,10 @@ func peekUserArea(pid int, offset uintptr) (uintptr, error) {
 
 func pokeUserArea(pid int, offset uintptr, data uintptr) error {
 	return ptrace(syscall.PTRACE_POKEUSR, pid, offset, data)
+}
+
+func getSigInfo(pid int, out *SigInfo) error {
+	return ptracePtr(syscall.PTRACE_GETSIGINFO, pid, 0, unsafe.Pointer(out))
 }
 
 func readVirtualMemory(pid int, addr uintptr, data []byte) (int, error) {

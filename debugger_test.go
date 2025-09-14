@@ -423,7 +423,7 @@ func (DebuggerSuite) TestSoftwareBreakPointSite(t *testing.T) {
 	expect.True(t, state.Stopped())
 	expect.Equal(t, syscall.SIGTRAP, state.StopSignal())
 
-	pc, err := db.getProgramCounter()
+	_, pc, err := db.getProgramCounter()
 	expect.Nil(t, err)
 	expect.Equal(t, loadAddress, pc)
 
@@ -615,4 +615,33 @@ func (DebuggerSuite) TestReadWriteMemory(t *testing.T) {
 	n, err = reader.Read(buffer)
 	expect.Nil(t, err)
 	expect.Equal(t, "hello world!", string(buffer[:n]))
+}
+
+func (DebuggerSuite) TestSyscallCatchpoint(t *testing.T) {
+	db, err := StartCmdAndAttachTo("test/targets/anti_debugger")
+	expect.Nil(t, err)
+	defer db.Close()
+
+	writeSyscall, ok := GetSyscallIdByName("write")
+	expect.True(t, ok)
+
+	db.SyscallCatchPolicy.CatchList([]SyscallId{writeSyscall})
+
+	state, err := db.ResumeUntilSignal()
+	expect.Nil(t, err)
+	expect.True(t, state.Stopped())
+	expect.Equal(t, syscall.SIGTRAP, state.StopSignal())
+	expect.Equal(t, SyscallTrap, state.TrapReason)
+	expect.NotNil(t, state.SyscallTrapInfo)
+	expect.Equal(t, writeSyscall, state.SyscallTrapInfo.Id)
+	expect.True(t, state.SyscallTrapInfo.IsEntry)
+
+	state, err = db.ResumeUntilSignal()
+	expect.Nil(t, err)
+	expect.True(t, state.Stopped())
+	expect.Equal(t, syscall.SIGTRAP, state.StopSignal())
+	expect.Equal(t, SyscallTrap, state.TrapReason)
+	expect.NotNil(t, state.SyscallTrapInfo)
+	expect.Equal(t, writeSyscall, state.SyscallTrapInfo.Id)
+	expect.False(t, state.SyscallTrapInfo.IsEntry)
 }

@@ -11,9 +11,10 @@ const (
 func SoftwareBreakPointSiteOptions() StopPointOptions {
 	return StopPointOptions{
 		Type: StopPointType{
-			Kind:      SoftwareKind,
-			Mode:      ExecuteMode,
-			WatchSize: 1,
+			IsBreakPoint: true,
+			Kind:         SoftwareKind,
+			Mode:         ExecuteMode,
+			WatchSize:    1,
 		},
 	}
 }
@@ -154,4 +155,12 @@ func (site *SoftwareBreakPointSite) ReplaceStopPointBytes(
 
 func (site *SoftwareBreakPointSite) deallocate() error {
 	return site.Disable()
+}
+
+func (SoftwareBreakPointSite) PreviousData() []byte {
+	return nil
+}
+
+func (SoftwareBreakPointSite) Data() []byte {
+	return nil
 }

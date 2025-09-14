@@ -1,9 +1,11 @@
 package bad
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"os/exec"
+	"os/signal"
 	"reflect"
 	"strconv"
 	"syscall"
@@ -15,6 +17,9 @@ import (
 
 const (
 	maxX64InstructionLength = 15
+
+	syscallTrapSignal         = syscall.SIGTRAP | 0x80
+	waitStatusSyscallTrapMask = ^uint32(0x80 << 8)
 )
 
 var (
@@ -55,26 +60,44 @@ type Debugger struct {
 
 	*RegisterSet
 
+	hardwareStopPoints *hardwareStopPointAllocator
+
 	BreakPointSites *StopPointSet
 	WatchPoints     *StopPointSet
+
+	SyscallCatchPolicy *SyscallCatchPolicy
 
 	Pid         int
 	ownsProcess bool
 
-	state ProcessState
+	state              ProcessState
+	expectsSyscallExit bool
+
+	ctx    context.Context
+	cancel func()
+
+	sigIntChan chan os.Signal
 }
 
 func newDebugger(tracer *ptrace.Tracer, ownsProcess bool) (*Debugger, error) {
-	allocator := NewStopPointAllocator()
+	hwStopPoints := newHardwareStopPointAllocator()
+	allocator := NewStopPointAllocator(hwStopPoints)
+
+	ctx, cancel := context.WithCancel(context.Background())
 
 	db := &Debugger{
-		tracer:          tracer,
-		RegisterSet:     NewRegisterSet(),
-		BreakPointSites: NewBreakPointSites(allocator),
-		WatchPoints:     NewWatchPoints(allocator),
-		Pid:             tracer.Pid(),
-		ownsProcess:     ownsProcess,
-		state:           newRunningProcessState(tracer.Pid()),
+		tracer:             tracer,
+		RegisterSet:        NewRegisterSet(),
+		hardwareStopPoints: hwStopPoints,
+		BreakPointSites:    NewBreakPointSites(allocator),
+		WatchPoints:        NewWatchPoints(allocator),
+		SyscallCatchPolicy: NewSyscallCatchPolicy(),
+		Pid:                tracer.Pid(),
+		ownsProcess:        ownsProcess,
+		state:              newRunningProcessState(tracer.Pid()),
+		ctx:                ctx,
+		cancel:             cancel,
+		sigIntChan:         make(chan os.Signal),
 	}
 
 	allocator.SetDebugger(db)
@@ -86,7 +109,7 @@ func newDebugger(tracer *ptrace.Tracer, ownsProcess bool) (*Debugger, error) {
 	}
 
 	if ownsProcess {
-		err = tracer.SetOptions(ptrace.O_EXITKILL)
+		err = tracer.SetOptions(ptrace.O_EXITKILL | ptrace.O_TRACESYSGOOD)
 		if err != nil {
 			_ = db.Close()
 			return nil, fmt.Errorf(
@@ -94,6 +117,9 @@ func newDebugger(tracer *ptrace.Tracer, ownsProcess bool) (*Debugger, error) {
 				tracer.Pid())
 		}
 	}
+
+	signal.Notify(db.sigIntChan, os.Interrupt)
+	go db.processSigInt()
 
 	return db, nil
 }
@@ -124,6 +150,20 @@ func StartCmdAndAttachTo(name string, args ...string) (*Debugger, error) {
 	return StartAndAttachTo(cmd)
 }
 
+func (db *Debugger) processSigInt() {
+	for {
+		select {
+		case <-db.ctx.Done():
+			return
+		case <-db.sigIntChan:
+			err := db.signal(syscall.SIGSTOP)
+			if err != nil {
+				panic(err)
+			}
+		}
+	}
+}
+
 func (db *Debugger) State() ProcessState {
 	return db.state
 }
@@ -144,7 +184,12 @@ func (db *Debugger) resume() error {
 		}
 	}
 
-	err := db.tracer.Resume(0)
+	var err error
+	if db.SyscallCatchPolicy.IsEnabled() {
+		err = db.tracer.SyscallTrappedResume(0)
+	} else {
+		err = db.tracer.Resume(0)
+	}
 	if err != nil {
 		return fmt.Errorf("failed to resume process %d: %w", db.Pid, err)
 	}
@@ -233,7 +278,114 @@ func (db *Debugger) stepInstruction() (ProcessState, error) {
 	return state, nil
 }
 
+// NOTE: this creates a new ProcessState without making any modification to
+// the debugger's internal state.
+func (db *Debugger) newProcessState(
+	status syscall.WaitStatus,
+) (
+	ProcessState,
+	error,
+) {
+	state := ProcessState{
+		Pid:    db.Pid,
+		Status: &status,
+	}
+
+	if !status.Stopped() {
+		return state, nil
+	}
+
+	registerState, pc, err := db.getProgramCounter()
+	if err != nil {
+		return ProcessState{}, err
+	}
+	state.NextInstructionAddress = pc
+
+	if status.StopSignal() == syscallTrapSignal {
+		state.TrapReason = SyscallTrap
+
+		// Replaced the modified syscall trap signal with a normal trap signal.
+		trapStatus := syscall.WaitStatus(uint32(status) & waitStatusSyscallTrapMask)
+		state.Status = &trapStatus
+
+		reg, ok := db.RegisterByName("orig_rax")
+		if !ok {
+			panic("should never happen")
+		}
+
+		sysNum := int(registerState.Value(reg).ToUint32())
+		id, ok := GetSyscallIdByNumber(sysNum)
+		if !ok {
+			return ProcessState{}, fmt.Errorf(
+				"trapped unknown syscall number (%d)",
+				sysNum)
+		}
+
+		info := &SyscallTrapInfo{
+			IsEntry: !db.expectsSyscallExit,
+			Id:      id,
+		}
+		state.SyscallTrapInfo = info
+
+		if db.expectsSyscallExit { // syscall returned
+			reg, ok = db.RegisterByName("rax")
+			if !ok {
+				panic("should never happen")
+			}
+
+			info.Ret = registerState.Value(reg).ToUint64()
+		} else { // syscall entry
+			for idx, arg := range []string{"rdi", "rsi", "rdx", "r10", "r8", "r9"} {
+				reg, ok = db.RegisterByName(arg)
+				if !ok {
+					panic("should never happen")
+				}
+
+				info.Args[idx] = registerState.Value(reg).ToUint64()
+			}
+		}
+
+		return state, nil
+	}
+
+	if status.StopSignal() != syscall.SIGTRAP {
+		return state, nil
+	}
+
+	sigInfo, err := db.tracer.GetSigInfo()
+	if err != nil {
+		return ProcessState{}, err
+	}
+
+	state.TrapReason = TrapCodeToReason(sigInfo.Code)
+	return state, nil
+}
+
 func (db *Debugger) waitForSignal() (ProcessState, error) {
+	for {
+		state, err := db.waitForAnySignal()
+		if err != nil {
+			return ProcessState{}, err
+		}
+
+		if !state.Stopped() ||
+			state.StopSignal() != syscall.SIGTRAP ||
+			state.TrapReason != SyscallTrap ||
+			db.SyscallCatchPolicy.Matches(state.SyscallTrapInfo.Id) {
+
+			return state, err
+		}
+
+		err = db.resume()
+		if err != nil {
+			return ProcessState{}, err
+		}
+	}
+}
+
+// NOTE: This returns on all traps, including traps on syscall that we don't
+// care about.
+func (db *Debugger) waitForAnySignal() (ProcessState, error) {
 	// NOTE: golang does not support waitpid
 	var status syscall.WaitStatus
 	_, err := syscall.Wait4(db.Pid, &status, 0, nil)
@@ -244,10 +396,53 @@ func (db *Debugger) waitForSignal() (ProcessState, error) {
 			err)
 	}
 
-	db.state = newProcessState(db.Pid, status)
+	state, err := db.newProcessState(status)
+	if err != nil {
+		return ProcessState{}, fmt.Errorf(
+			"failed to wait for process %d: %w",
+			db.Pid,
+			err)
+	}
 
-	if db.state.Stopped() {
-		nextInstructionAddr, err := db.getProgramCounter()
+	db.state = state
+
+	if !db.state.Stopped() || db.state.StopSignal() != syscall.SIGTRAP {
+		return db.state, nil
+	}
+
+	if db.state.TrapReason == SyscallTrap {
+		db.expectsSyscallExit = !db.expectsSyscallExit
+		return db.state, nil
+	}
+
+	// In case syscall catch point got disabled after syscall entry, but before
+	// syscall exit.
+	db.expectsSyscallExit = false
+
+	if db.state.TrapReason == SoftwareTrap {
+		// NOTE: currentInstructionAddr may not be a valid instruction address
+		// since x64 instruction could span multiple bytes.  However, since
+		// break point sites are implemented using the int3 (0xcc), we know for
+		// sure the address is valid if the current instruction is a break
+		// point site.
+		currentInstructionAddr := db.state.NextInstructionAddress - 1
+
+		site, ok := db.BreakPointSites.Get(currentInstructionAddr)
+		if ok && site.IsEnabled() {
+			// set pc back to int3's address
+			err := db.setProgramCounter(currentInstructionAddr)
+			if err != nil {
+				return ProcessState{}, fmt.Errorf(
+					"failed to wait for process %d. "+
+						"cannot reset program counter at break point: %w",
+					db.Pid,
+					err)
+			}
+
+			db.state.StopPoints = append(db.state.StopPoints, site)
+		}
+	} else if db.state.TrapReason == HardwareTrap {
+		triggered, err := db.hardwareStopPoints.ListTriggered()
 		if err != nil {
 			return ProcessState{}, fmt.Errorf(
 				"failed to wait for process %d: %w",
@@ -255,26 +450,7 @@ func (db *Debugger) waitForSignal() (ProcessState, error) {
 				err)
 		}
 
-		db.state.NextInstructionAddress = nextInstructionAddr
-
-		if db.state.StopSignal() == syscall.SIGTRAP {
-			// NOTE: currentInstructionAddr may not be a valid instruction address
-			// since x64 instruction could span multiple bytes.  However, since break
-			// point sites are implemented using the int3 (0xcc), we know for sure
-			// the address is valid if the current instruction is a break point site.
-			currentInstructionAddr := nextInstructionAddr - 1
-
-			site, ok := db.BreakPointSites.Get(currentInstructionAddr)
-			if ok && site.IsEnabled() {
-				// set pc back to int3's address
-				err := db.setProgramCounter(currentInstructionAddr)
-				if err != nil {
-					return ProcessState{}, fmt.Errorf(
-						"failed to reset program counter at break point: %w",
-						err)
-				}
-			}
-		}
+		db.state.StopPoints = append(db.state.StopPoints, triggered...)
 	}
 
 	return db.state, nil
@@ -293,6 +469,8 @@ func (db *Debugger) signal(signal syscall.Signal) error {
 }
 
 func (db *Debugger) Close() error {
+	db.cancel()
+
 	if db.state.Running() {
 		err := db.signal(syscall.SIGSTOP)
 		if err != nil {
@@ -342,6 +520,10 @@ func (db *Debugger) GetRegisterState() (RegisterState, error) {
 			db.state)
 	}
 
+	return db.getRegisterState()
+}
+
+func (db *Debugger) getRegisterState() (RegisterState, error) {
 	gpr, err := db.tracer.GetGeneralRegisters()
 	if err != nil {
 		return RegisterState{}, err
@@ -377,6 +559,10 @@ func (db *Debugger) SetRegisterState(state RegisterState) error {
 			db.state)
 	}
 
+	return db.setRegisterState(state)
+}
+
+func (db *Debugger) setRegisterState(state RegisterState) error {
 	err := db.tracer.SetGeneralRegisters(&state.gpr)
 	if err != nil {
 		return err
@@ -404,10 +590,12 @@ func (db *Debugger) SetRegisterState(state RegisterState) error {
 	return nil
 }
 
-func (db *Debugger) getProgramCounter() (VirtualAddress, error) {
-	state, err := db.GetRegisterState()
+func (db *Debugger) getProgramCounter() (RegisterState, VirtualAddress, error) {
+	state, err := db.getRegisterState()
 	if err != nil {
-		return 0, fmt.Errorf("failed to read program counter: %w", err)
+		return RegisterState{}, 0, fmt.Errorf(
+			"failed to read program counter: %w",
+			err)
 	}
 
 	rip, ok := db.RegisterByName("rip")
@@ -415,11 +603,11 @@ func (db *Debugger) getProgramCounter() (VirtualAddress, error) {
 		panic("should never happen")
 	}
 
-	return VirtualAddress(state.Value(rip).ToUint64()), nil
+	return state, VirtualAddress(state.Value(rip).ToUint64()), nil
 }
 
 func (db *Debugger) setProgramCounter(addr VirtualAddress) error {
-	state, err := db.GetRegisterState()
+	state, err := db.getRegisterState()
 	if err != nil {
 		return fmt.Errorf("failed to read program counter: %w", err)
 	}
@@ -437,7 +625,7 @@ func (db *Debugger) setProgramCounter(addr VirtualAddress) error {
 			err)
 	}
 
-	err = db.SetRegisterState(newState)
+	err = db.setRegisterState(newState)
 	if err != nil {
 		return fmt.Errorf("failed to set program counter to %s: %w", addr, err)
 	}

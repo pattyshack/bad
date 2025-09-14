@@ -25,7 +25,7 @@ type request struct {
 
 	signal int // resume
 
-	options int // set options
+	options Options // set options
 
 	regs *UserRegs // get/set regs
 
@@ -44,6 +44,8 @@ type response struct {
 	registerData uintptr // peek user area
 
 	count int // peek/poke data
+
+	sigInfo *SigInfo // get sig info
 
 	err error
 }
@@ -100,6 +102,7 @@ type Tracer struct {
 	detachOp
 
 	resumeOp
+	syscallTrappedResumeOp
 	singleStepOp
 
 	setOptionsOp
@@ -116,6 +119,8 @@ type Tracer struct {
 	peekDataOp
 	pokeDataOp
 	readMemoryOp
+
+	getSigInfoOp
 }
 
 func (tracer *Tracer) registerOp(Type opType, op ptraceOp) {
@@ -139,6 +144,7 @@ func newTracer() *Tracer {
 	tracer.registerOp(detach, &tracer.detachOp)
 
 	tracer.registerOp("resume", &tracer.resumeOp)
+	tracer.registerOp("syscall", &tracer.syscallTrappedResumeOp)
 	tracer.registerOp("singleStep", &tracer.singleStepOp)
 
 	tracer.registerOp("setOptions", &tracer.setOptionsOp)
@@ -155,6 +161,8 @@ func newTracer() *Tracer {
 	tracer.registerOp("peekData", &tracer.peekDataOp)
 	tracer.registerOp("pokeData", &tracer.pokeDataOp)
 	tracer.registerOp("readMemory", &tracer.readMemoryOp)
+
+	tracer.registerOp("getSigInfo", &tracer.getSigInfoOp)
 
 	go tracer.processRequests()
 	return tracer
@@ -180,6 +188,10 @@ func StartAndAttachToProcess(cmd *exec.Cmd) (*Tracer, error) {
 
 	// Child process invokes PTRACE_TRACEME on start.
 	cmd.SysProcAttr.Ptrace = true
+
+	// Set pgid to a different group to ensure signals sent to the tracer
+	// process won't be forwarded to the child command process.
+	cmd.SysProcAttr.Setpgid = true
 
 	tracer := newTracer()
 
@@ -331,12 +343,37 @@ func (op resumeOp) Resume(signal int) error {
 	return err
 }
 
+type syscallTrappedResumeOp struct {
+	basePtraceOp
+}
+
+func (op syscallTrappedResumeOp) process(pid int, req request) response {
+	err := syscall.PtraceSyscall(pid, req.signal)
+	if err != nil {
+		err = fmt.Errorf(
+			"failed to (syscall-trapped) resume process %d: %w",
+			pid,
+			err)
+	}
+
+	return response{
+		err: err,
+	}
+}
+
+func (op syscallTrappedResumeOp) SyscallTrappedResume(signal int) error {
+	_, err := op.send(request{
+		signal: signal,
+	})
+	return err
+}
+
 type setOptionsOp struct {
 	basePtraceOp
 }
 
 func (op setOptionsOp) process(pid int, req request) response {
-	err := syscall.PtraceSetOptions(pid, req.options)
+	err := syscall.PtraceSetOptions(pid, int(req.options))
 	if err != nil {
 		err = fmt.Errorf("failed to set options for process %d: %w", pid, err)
 	}
@@ -346,7 +383,7 @@ func (op setOptionsOp) process(pid int, req request) response {
 	}
 }
 
-func (op setOptionsOp) SetOptions(options int) error {
+func (op setOptionsOp) SetOptions(options Options) error {
 	_, err := op.send(request{
 		options: options,
 	})
@@ -376,7 +413,11 @@ func (op getRegsOp) GetGeneralRegisters() (*UserRegs, error) {
 	_, err := op.send(request{
 		regs: out,
 	})
-	return out, err
+	if err != nil {
+		return nil, err
+	}
+
+	return out, nil
 }
 
 type setRegsOp struct {
@@ -427,7 +468,11 @@ func (op getFPRegsOp) GetFloatingPointRegisters() (*UserFPRegs, error) {
 	_, err := op.send(request{
 		fpRegs: out,
 	})
-	return out, err
+	if err != nil {
+		return nil, err
+	}
+
+	return out, nil
 }
 
 type setFPRegsOp struct {
@@ -633,4 +678,30 @@ func (op singleStepOp) process(pid int, req request) response {
 func (op singleStepOp) SingleStep() error {
 	_, err := op.send(request{})
 	return err
+}
+
+type getSigInfoOp struct {
+	basePtraceOp
+}
+
+func (op getSigInfoOp) process(pid int, req request) response {
+	out := &SigInfo{}
+	err := getSigInfo(pid, out)
+	if err != nil {
+		out = nil
+		err = fmt.Errorf(
+			"failed to get signal information from process %d: %w",
+			pid,
+			err)
+	}
+
+	return response{
+		sigInfo: out,
+		err:     err,
+	}
+}
+
+func (op getSigInfoOp) GetSigInfo() (*SigInfo, error) {
+	resp, err := op.send(request{})
+	return resp.sigInfo, err
 }

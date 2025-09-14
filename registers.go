@@ -695,6 +695,8 @@ func NewRegisterSet() *RegisterSet {
 		}
 	}
 
+	set.addGpr64("orig_rax", -1, "Orig_rax")
+
 	set.addFpr16("fcw", 65, "Cwd")
 	set.addFpr16("fsw", 66, "Swd")
 	set.addFpr16("ftw", -1, "Ftw")

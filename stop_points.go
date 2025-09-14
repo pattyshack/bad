@@ -25,44 +25,49 @@ const (
 )
 
 type StopPointType struct {
-	Kind      StopPointKind
-	Mode      StopPointMode
-	WatchSize int // 1, 2, 4, 8
+	IsBreakPoint bool // false for watchpoint
+	Kind         StopPointKind
+	Mode         StopPointMode
+	WatchSize    int // 1, 2, 4, 8
 }
 
 func (t StopPointType) String() string {
-	stopPoint := ""
-	if t.Mode == ExecuteMode && t.WatchSize == 1 {
-		stopPoint = " break point site"
-	} else {
-		stopPoint = " " + string(t.Mode) + " watch point"
+	if t.IsBreakPoint {
+		return string(t.Kind) + " break point site"
 	}
 
-	size := ""
-	if t.WatchSize > 1 {
-		size = fmt.Sprintf(" (size=%d)", t.WatchSize)
-	}
-
-	return string(t.Kind) + stopPoint + size
+	return fmt.Sprintf(
+		"%s %s watch point (size=%d)",
+		t.Kind,
+		t.Mode,
+		t.WatchSize)
 }
 
 func (t StopPointType) Validate(address VirtualAddress) error {
-	switch t.Kind {
-	case HardwareKind:
-		// do nothing
-	case SoftwareKind:
+	if t.IsBreakPoint {
 		if t.Mode != ExecuteMode {
 			return fmt.Errorf(
-				"%w. invalid software break point site mode (%s)",
+				"%w. invalid break point mode (%s)",
 				ErrInvalidArgument,
 				t.Mode)
 		}
 
 		if t.WatchSize != 1 {
 			return fmt.Errorf(
-				"%w. invalid software break point site watch size (%d)",
+				"%w. invalid break point watch size (%d)",
 				ErrInvalidArgument,
 				t.WatchSize)
+		}
+	}
+
+	switch t.Kind {
+	case HardwareKind:
+		// do nothing
+	case SoftwareKind:
+		if !t.IsBreakPoint {
+			return fmt.Errorf(
+				"%w. cannot create software watch point",
+				ErrInvalidArgument)
 		}
 	default:
 		return fmt.Errorf(
@@ -123,6 +128,10 @@ type StopPoint interface {
 	// Called by stop point set on Remove.  deallocate must disable the stop
 	// point and perform necessary cleanup.
 	deallocate() error
+
+	// Mainly used by watch point
+	PreviousData() []byte
+	Data() []byte
 }
 
 type StopPointAllocator interface {
@@ -133,11 +142,13 @@ type StopPointAllocator interface {
 
 type stopPointAllocator struct {
 	software softwareBreakPointSiteAllocator
-	hardware hardwareStopPointAllocator
+	hardware *hardwareStopPointAllocator
 }
 
-func NewStopPointAllocator() StopPointAllocator {
-	return &stopPointAllocator{}
+func NewStopPointAllocator(hw *hardwareStopPointAllocator) StopPointAllocator {
+	return &stopPointAllocator{
+		hardware: hw,
+	}
 }
 
 func (allocator *stopPointAllocator) SetDebugger(debugger *Debugger) {
@@ -174,18 +185,10 @@ func (allocator breakPointSiteAllocator) Allocate(
 	StopPoint,
 	error,
 ) {
-	if options.Type.Mode != ExecuteMode {
+	if !options.Type.IsBreakPoint {
 		return nil, fmt.Errorf(
-			"%w. invalid break point site mode (%s)",
-			ErrInvalidArgument,
-			options.Type.Mode)
-	}
-
-	if options.Type.WatchSize != 1 {
-		return nil, fmt.Errorf(
-			"%w. invalid break point site watch size (%d)",
-			ErrInvalidArgument,
-			options.Type.WatchSize)
+			"%w. cannot watch point in break point set",
+			ErrInvalidArgument)
 	}
 
 	return allocator.base.Allocate(address, options)
@@ -206,11 +209,10 @@ func (allocator watchPointAllocator) Allocate(
 	StopPoint,
 	error,
 ) {
-	if options.Type.Kind != HardwareKind {
+	if options.Type.IsBreakPoint {
 		return nil, fmt.Errorf(
-			"%w. invalid watch point kind (%s)",
-			ErrInvalidArgument,
-			options.Type.Kind)
+			"%w. cannot create break point in watch point set",
+			ErrInvalidArgument)
 	}
 
 	return allocator.base.Allocate(address, options)

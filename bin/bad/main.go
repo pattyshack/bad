@@ -117,7 +117,29 @@ func initializeCommands(debugger *bad.Debugger) command {
 		},
 	}
 
+	syscallCatchPolicyCmds := syscallCatchPolicyCommands{
+		policy: debugger.SyscallCatchPolicy,
+	}
+
+	catchPointCmds := subCommands{
+		{
+			name:        "syscall",
+			description: " - commands for operating on syscall catch policy",
+			command:     syscallCatchPolicyCmds.SubCommands(),
+		},
+	}
+
 	return subCommands{
+		{
+			name:        "continue",
+			description: "   - resume the process",
+			command:     newFuncCmd(debugger, resume),
+		},
+		{
+			name:        "step",
+			description: "       - step over a single instruction",
+			command:     newFuncCmd(debugger, stepInstruction),
+		},
 		{
 			name:        "register",
 			description: "   - commands for operating on registers",
@@ -127,6 +149,13 @@ func initializeCommands(debugger *bad.Debugger) command {
 			name:        "memory",
 			description: "     - commands for operating on virtual memory",
 			command:     memoryCmds,
+		},
+		{
+			name: "disassemble",
+			description: " [<n=5>] [@<addr=pc>]\n" +
+				"    - disassemble <n> (default=5) instructions " +
+				"at @<addr> (default=pc)",
+			command: newFuncCmd(debugger, disassemble),
 		},
 		{
 			name:        "breakpoint",
@@ -139,24 +168,11 @@ func initializeCommands(debugger *bad.Debugger) command {
 			command:     watchPointCmds.SubCommands(),
 		},
 		{
-			name:        "continue",
-			description: "   - resume the process",
-			command:     newFuncCmd(debugger, resume),
-		},
-		{
-			name:        "step",
-			description: "       - step over a single instruction",
-			command:     newFuncCmd(debugger, stepInstruction),
-		},
-		{
-			name: "disassemble",
-			description: " [<n=5>] [@<addr=pc>]\n" +
-				"    - disassemble <n> (default=5) instructions " +
-				"at @<addr> (default=pc)",
-			command: newFuncCmd(debugger, disassemble),
+			name:        "catchpoint",
+			description: " - commands for operating on catch points",
+			command:     catchPointCmds,
 		},
 	}
-
 }
 
 type noOpCmd struct{}
