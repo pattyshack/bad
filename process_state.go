@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"fmt"
 	"syscall"
+
+	"github.com/pattyshack/bad/elf"
 )
 
 type TrapReason string
@@ -61,6 +63,9 @@ type ProcessState struct {
 
 	// Only populated when process is stopped.
 	NextInstructionAddress VirtualAddress
+
+	// Only populated when process is stopped
+	Symbol *elf.Symbol
 
 	// Only populated when process is stopped by SIGTRAP
 	TrapReason
@@ -152,10 +157,16 @@ func (state ProcessState) String() string {
 			}
 		}
 
+		inSymbol := ""
+		if state.Symbol != nil && state.Symbol.Type() == elf.SymbolTypeFunction {
+			inSymbol = fmt.Sprintf(" (%s)", state.Symbol.PrettyName())
+		}
+
 		return fmt.Sprintf(
-			"process %d stopped at %s with signal: %v%s",
+			"process %d stopped at %s%s with signal: %v%s",
 			state.Pid,
 			state.NextInstructionAddress,
+			inSymbol,
 			state.StopSignal(),
 			reason)
 	} else if state.Signaled() {

@@ -13,6 +13,7 @@ import (
 	"github.com/pattyshack/gt/testing/expect"
 	"github.com/pattyshack/gt/testing/suite"
 
+	"github.com/pattyshack/bad/elf"
 	"github.com/pattyshack/bad/procfs"
 )
 
@@ -28,7 +29,7 @@ func TestDebugger(t *testing.T) {
 }
 
 func (DebuggerSuite) TestLaunchProcess(t *testing.T) {
-	db, err := StartCmdAndAttachTo("test/targets/run_endlessly")
+	db, err := StartCmdAndAttachTo("test_targets/run_endlessly")
 	expect.Nil(t, err)
 
 	defer db.Close()
@@ -69,7 +70,7 @@ func (DebuggerSuite) TestAttachInvalidPid(t *testing.T) {
 }
 
 func (DebuggerSuite) TestResumeFromAttach(t *testing.T) {
-	cmd := exec.Command("test/targets/run_endlessly")
+	cmd := exec.Command("test_targets/run_endlessly")
 	cmd.Start()
 	defer cmd.Process.Kill()
 
@@ -92,7 +93,7 @@ func (DebuggerSuite) TestResumeFromAttach(t *testing.T) {
 }
 
 func (DebuggerSuite) TestResumeFromStart(t *testing.T) {
-	db, err := StartCmdAndAttachTo("test/targets/run_endlessly")
+	db, err := StartCmdAndAttachTo("test_targets/run_endlessly")
 	expect.Nil(t, err)
 	defer db.Close()
 
@@ -132,7 +133,7 @@ func (DebuggerSuite) TestSetRegisterState(t *testing.T) {
 
 	defer reader.Close()
 
-	cmd := exec.Command("test/targets/reg_write")
+	cmd := exec.Command("test_targets/reg_write")
 	cmd.Stderr = os.Stderr
 	cmd.Stdout = writer
 
@@ -282,7 +283,7 @@ func (DebuggerSuite) TestSetRegisterState(t *testing.T) {
 }
 
 func (DebuggerSuite) TestGetRegisterState(t *testing.T) {
-	db, err := StartCmdAndAttachTo("test/targets/reg_read")
+	db, err := StartCmdAndAttachTo("test_targets/reg_read")
 	expect.Nil(t, err)
 	defer db.Close()
 
@@ -396,7 +397,7 @@ func (DebuggerSuite) TestSoftwareBreakPointSite(t *testing.T) {
 
 	defer reader.Close()
 
-	binaryPath := "test/targets/hello_world"
+	binaryPath := "test_targets/hello_world"
 
 	cmd := exec.Command(binaryPath)
 	cmd.Stderr = os.Stderr
@@ -409,11 +410,7 @@ func (DebuggerSuite) TestSoftwareBreakPointSite(t *testing.T) {
 	err = writer.Close()
 	expect.Nil(t, err)
 
-	offset, err := getEntryPointOffset(binaryPath)
-	expect.Nil(t, err)
-
-	loadAddress, err := getLoadAddress(cmd.Process.Pid, offset)
-	expect.Nil(t, err)
+	loadAddress := db.ToVirtualAddress(elf.FileAddress(db.EntryPointAddress))
 
 	_, err = db.BreakPointSites.Set(loadAddress, SoftwareBreakPointSiteOptions())
 	expect.Nil(t, err)
@@ -443,7 +440,7 @@ func (DebuggerSuite) TestHardwareBreakPointEvadesMemoryChecksum(t *testing.T) {
 
 	defer reader.Close()
 
-	cmd := exec.Command("test/targets/anti_debugger")
+	cmd := exec.Command("test_targets/anti_debugger")
 	cmd.Stderr = os.Stderr
 	cmd.Stdout = writer
 
@@ -505,7 +502,7 @@ func (DebuggerSuite) TestWatchPoint(t *testing.T) {
 
 	defer reader.Close()
 
-	cmd := exec.Command("test/targets/anti_debugger")
+	cmd := exec.Command("test_targets/anti_debugger")
 	cmd.Stderr = os.Stderr
 	cmd.Stdout = writer
 
@@ -563,7 +560,7 @@ func (DebuggerSuite) TestReadWriteMemory(t *testing.T) {
 
 	defer reader.Close()
 
-	binaryPath := "test/targets/memory"
+	binaryPath := "test_targets/memory"
 
 	cmd := exec.Command(binaryPath)
 	cmd.Stderr = os.Stderr
@@ -618,7 +615,7 @@ func (DebuggerSuite) TestReadWriteMemory(t *testing.T) {
 }
 
 func (DebuggerSuite) TestSyscallCatchpoint(t *testing.T) {
-	db, err := StartCmdAndAttachTo("test/targets/anti_debugger")
+	db, err := StartCmdAndAttachTo("test_targets/anti_debugger")
 	expect.Nil(t, err)
 	defer db.Close()
 

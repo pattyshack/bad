@@ -8,7 +8,7 @@ import (
 
 var (
 	// EI_MAG0 - EI_MAG3
-	identifierMagic = []byte{
+	IdentifierMagic = []byte{
 		0x7f, // ELFMAG0
 		'E',  // ELFMAG1
 		'L',  // ELFMAG2
@@ -306,20 +306,6 @@ const (
 	MachineArchitectureX86_64 = MachineArchitecture(62) // EM_X86_64
 )
 
-type MachineSpec struct {
-	DataEncoding
-	OperatingSystemABI
-}
-
-var (
-	supportedArchitecture = map[MachineArchitecture]MachineSpec{
-		MachineArchitectureX86_64: MachineSpec{
-			DataEncoding:       DataEncodingTwosComplementLittleEndian,
-			OperatingSystemABI: OperatingSystemABIUnixSystemV,
-		},
-	}
-)
-
 func (arch MachineArchitecture) String() string {
 	switch arch {
 	case MachineArchitectureNone:
@@ -434,71 +420,71 @@ const (
 
 // e_ident
 type Identifier struct {
-	Magic [4]byte
-	Class
-	DataEncoding
-	IdentifierVersion byte
-	OperatingSystemABI
-	ABIVersion byte
-	Padding    [7]byte
+	Magic              [4]byte // EI_MAG0 ... EI_MAG3
+	Class                      // EI_CLASS
+	DataEncoding               // EI_DATA
+	IdentifierVersion  byte    // EI_VERSION
+	OperatingSystemABI         // EI_OSABI
+	ABIVersion         byte    // EI_ABIVERSION
+	Padding            [7]byte // EI_PAD
 }
 
 // Elf64_Ehdr
 type ElfHeader struct {
-	Identifier
-	FileType
-	MachineArchitecture
-	FormatVersion           uint32
-	EntryPointAddress       uint64
-	ProgramHeaderOffset     uint64
-	SectionHeaderOffset     uint64
-	ArchitectureFlags       uint32
-	ElfHeaderSize           uint16
-	ProgramHeaderEntrySize  uint16
-	NumProgramHeaderEntries uint16
-	SectionHeaderEntrySize  uint16
-	NumSectionHeaderEntries uint16
-	SectionStringTableIndex SectionIndex
+	Identifier                           // e_ident[EI_NIDENT]
+	FileType                             // e_type
+	MachineArchitecture                  // e_machine
+	FormatVersion           uint32       // e_version
+	EntryPointAddress       uint64       // e_entry
+	ProgramHeaderOffset     uint64       // e_phoff
+	SectionHeaderOffset     uint64       // e_shoff
+	ArchitectureFlags       uint32       // e_flags
+	ElfHeaderSize           uint16       // e_ehsize
+	ProgramHeaderEntrySize  uint16       // e_phentsize
+	NumProgramHeaderEntries uint16       // e_phnum
+	SectionHeaderEntrySize  uint16       // e_shentsize
+	NumSectionHeaderEntries uint16       // e_shnum
+	SectionStringTableIndex SectionIndex // e_shstrndx
 }
 
 // Elf64_Phdr
 type ProgramHeaderEntry struct {
-	ProgramType
-	ProgramFlags
-	ContentOffset   uint64
-	VirtualAddress  uint64
-	PhysicalAddress uint64
-	FileImageSize   uint64
-	MemoryImageSize uint64
-	Alignment       uint64
+	ProgramType            // p_type
+	ProgramFlags           // p_flags
+	ContentOffset   uint64 // p_offset
+	VirtualAddress  uint64 // p_vaddr
+	PhysicalAddress uint64 // p_paddr
+	FileImageSize   uint64 // filesz
+	MemoryImageSize uint64 // p_memsz
+	Alignment       uint64 // p_align
 }
 
 // Elf64_Shdr
 type SectionHeaderEntry struct {
-	NameIndex uint32
-	SectionType
-	SectionFlags
-	Address          uint64
-	Offset           uint64
-	Size             uint64
-	Link             uint32
-	Info             uint32
-	AddressAlignment uint64
-	EntrySize        uint64
+	NameIndex        uint32 // sh_name
+	SectionType             // sh_type
+	SectionFlags            // sh_flags
+	Address          uint64 // sh_addr
+	Offset           uint64 // sh_offset
+	Size             uint64 // sh_size
+	Link             uint32 // sh_link
+	Info             uint32 // sh_info
+	AddressAlignment uint64 // sh_addralign
+	EntrySize        uint64 // sh_entsize
 }
 
 // Elf64_Sym
 type SymbolEntry struct {
-	NameIndex uint32
-	Info      byte // st_info.  (4 bits st_bind, 4 bits st_type)
-	SymbolVisibility
-	SectionIndex
-	Value uint64
-	Size  uint64
+	NameIndex        uint32 // st_name
+	Info             byte   // st_info.  (4 bits st_bind, 4 bits st_type)
+	SymbolVisibility        // st_other
+	SectionIndex            // st_shndx
+	Value            uint64 // st_value
+	Size             uint64 // st_size
 }
 
-// NOTE: Although Elf64_Nhdr is defined, it looks like elf64 files in general
-// still encode notes using Elf32_Nhdr.
+// NOTE: Although Elf64_Nhdr is defined, it looks like notes in elf64 files
+// are still encoded using Elf32_Nhdr.
 // Elf32_Nhdr
 type NoteHeader struct {
 	NameSize        uint32

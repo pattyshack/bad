@@ -7,7 +7,6 @@ import (
 	"os/exec"
 	"os/signal"
 	"reflect"
-	"strconv"
 	"syscall"
 
 	"golang.org/x/arch/x86/x86asm"
@@ -34,15 +33,6 @@ func (addr VirtualAddress) String() string {
 	return fmt.Sprintf("0x%016x", uint64(addr))
 }
 
-func ParseVirtualAddress(value string) (VirtualAddress, error) {
-	addr, err := strconv.ParseUint(value, 0, 64)
-	if err != nil {
-		return 0, fmt.Errorf("failed to parse virtual address (%s): %w", value, err)
-	}
-
-	return VirtualAddress(addr), nil
-}
-
 type DisassembledInstruction struct {
 	Address VirtualAddress
 	x86asm.Inst
@@ -66,6 +56,8 @@ type Debugger struct {
 	WatchPoints     *StopPointSet
 
 	SyscallCatchPolicy *SyscallCatchPolicy
+
+	*LoadedElfFile
 
 	Pid         int
 	ownsProcess bool
@@ -102,7 +94,14 @@ func newDebugger(tracer *ptrace.Tracer, ownsProcess bool) (*Debugger, error) {
 
 	allocator.SetDebugger(db)
 
-	_, err := db.waitForSignal()
+	file, err := loadElf(db.Pid)
+	if err != nil {
+		_ = db.Close()
+		return nil, err
+	}
+	db.LoadedElfFile = file
+
+	_, err = db.waitForSignal()
 	if err != nil {
 		_ = db.Close()
 		return nil, err
@@ -300,6 +299,7 @@ func (db *Debugger) newProcessState(
 		return ProcessState{}, err
 	}
 	state.NextInstructionAddress = pc
+	state.Symbol = db.LoadedElfFile.SymbolSpans(pc)
 
 	if status.StopSignal() == syscallTrapSignal {
 		state.TrapReason = SyscallTrap
@@ -631,6 +631,7 @@ func (db *Debugger) setProgramCounter(addr VirtualAddress) error {
 	}
 
 	db.state.NextInstructionAddress = addr
+	db.state.Symbol = db.LoadedElfFile.SymbolSpans(addr)
 	return nil
 }
 

@@ -90,11 +90,13 @@ func initializeCommands(debugger *bad.Debugger) command {
 	}
 
 	breakPointCmds := stopPointCommands{
+		debugger:      debugger,
 		stopPoints:    debugger.BreakPointSites,
 		isBreakPoints: true,
 	}
 
 	watchPointCmds := stopPointCommands{
+		debugger:      debugger,
 		stopPoints:    debugger.WatchPoints,
 		isBreakPoints: false,
 	}
@@ -321,7 +323,10 @@ func main() {
 
 	topCmds := initializeCommands(db)
 
-	fmt.Println("attached to process", db.Pid)
+	fmt.Printf(
+		"attached to process %d (load bias: 0x%x)\n",
+		db.Pid,
+		db.LoadedElfFile.LoadBias)
 
 	rl, err := readline.New("bad > ")
 	if err != nil {

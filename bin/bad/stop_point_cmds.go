@@ -9,6 +9,7 @@ import (
 )
 
 type stopPointCommands struct {
+	debugger   *bad.Debugger
 	stopPoints *bad.StopPointSet
 
 	isBreakPoints bool // false = watch point
@@ -104,7 +105,7 @@ func (cmd stopPointCommands) parseBreakPoint(
 			"failed to set break point. address not specified")
 	}
 
-	addr, err := bad.ParseVirtualAddress(args[0])
+	addr, err := cmd.debugger.ParseAddress(args[0])
 	if err != nil {
 		return 0, bad.StopPointOptions{}, fmt.Errorf(
 			"failed to set break point: %w",
@@ -130,7 +131,7 @@ func (cmd stopPointCommands) parseWatchPoint(
 		return 0, bad.StopPointOptions{}, fmt.Errorf(
 			"failed to set watch point. expected 3 arguments: <addr> <mode> <size>")
 	}
-	addr, err := bad.ParseVirtualAddress(args[0])
+	addr, err := cmd.debugger.ParseAddress(args[0])
 	if err != nil {
 		return 0, bad.StopPointOptions{}, fmt.Errorf(
 			"failed to set watch point: %w",
@@ -193,7 +194,7 @@ func (cmd stopPointCommands) remove(args []string) error {
 		return nil
 	}
 
-	addr, err := bad.ParseVirtualAddress(args[0])
+	addr, err := cmd.debugger.ParseAddress(args[0])
 	if err != nil {
 		fmt.Printf("failed to remove %s: %s\n", cmd.name(), err)
 		return nil
@@ -217,7 +218,7 @@ func (cmd stopPointCommands) enable(args []string) error {
 		return nil
 	}
 
-	addr, err := bad.ParseVirtualAddress(args[0])
+	addr, err := cmd.debugger.ParseAddress(args[0])
 	if err != nil {
 		fmt.Printf("failed to enable %s: %s\n", cmd.name(), err)
 		return nil
@@ -243,7 +244,7 @@ func (cmd stopPointCommands) disable(args []string) error {
 		return nil
 	}
 
-	addr, err := bad.ParseVirtualAddress(args[0])
+	addr, err := cmd.debugger.ParseAddress(args[0])
 	if err != nil {
 		fmt.Printf("failed to disable %s: %s\n", cmd.name(), err)
 		return nil
