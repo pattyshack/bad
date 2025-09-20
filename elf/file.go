@@ -33,14 +33,14 @@ type File struct {
 	ProgramHeaders []ProgramHeaderEntry
 }
 
-func (file *File) GetSection(name string) (Section, bool) {
+func (file *File) GetSection(name string) Section {
 	for _, section := range file.Sections {
 		if section.Name() == name {
-			return section, true
+			return section
 		}
 	}
 
-	return nil, false
+	return nil
 }
 
 type parser struct {
@@ -120,10 +120,9 @@ func (p *parser) parseIdentifier() error {
 	}
 
 	switch id.DataEncoding {
-	case DataEncodingTwosComplementLittleEndian:
-		p.ByteOrder = binary.LittleEndian
-	case DataEncodingTwosComplementBigEndian:
-		p.ByteOrder = binary.BigEndian
+	case DataEncodingTwosComplementLittleEndian,
+		DataEncodingTwosComplementBigEndian:
+		p.ByteOrder = id.DataEncoding.ByteOrder()
 	default:
 		return fmt.Errorf("unsupported data encoding: %s", id.DataEncoding)
 	}

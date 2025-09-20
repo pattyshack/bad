@@ -30,6 +30,8 @@ func main() {
 		fmt.Printf("  [%d] %s: %v\n", sectionIdx, section.Name(), section.Header())
 
 		switch s := section.(type) {
+		case *elf.RawSection:
+			fmt.Printf("    raw content size: %d\n", len(s.Content))
 		case *elf.StringTableSection:
 			fmt.Printf("    Number of string entries: %d\n", s.NumEntries())
 		case *elf.SymbolTableSection:

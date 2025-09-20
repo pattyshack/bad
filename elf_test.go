@@ -40,8 +40,8 @@ func (ElfSuite) TestParse(t *testing.T) {
 	file, err := elf.ParseBytes(content)
 	expect.Nil(t, err)
 
-	section, ok := file.GetSection(".symtab")
-	expect.True(t, ok)
+	section := file.GetSection(".symtab")
+	expect.NotNil(t, section)
 
 	table, ok := section.(*elf.SymbolTableSection)
 	expect.True(t, ok)

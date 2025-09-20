@@ -2,6 +2,7 @@ package elf
 
 import (
 	"bytes"
+	"fmt"
 
 	"github.com/ianlancetaylor/demangle"
 )
@@ -14,6 +15,8 @@ type Section interface {
 	BindSectionNameTable(sectionNames *StringTableSection)
 	Name() string
 
+	RawContent() ([]byte, error)
+
 	// See elf spec. Figure 1-12. sh_link and sh_info interpretation.
 	// TODO replace RawSection with RelocationSection
 	BindStringTable(stringTable *StringTableSection)
@@ -24,7 +27,8 @@ type Section interface {
 type BaseSection struct {
 	SectionHeaderEntry
 
-	name string
+	sectionNameTable *StringTableSection
+	name             string
 }
 
 func newBaseSection(header SectionHeaderEntry) BaseSection {
@@ -44,7 +48,12 @@ func (base *BaseSection) Name() string {
 func (base *BaseSection) BindSectionNameTable(
 	sectionNames *StringTableSection,
 ) {
+	base.sectionNameTable = sectionNames
 	base.name = sectionNames.Get(base.NameIndex)
+}
+
+func (BaseSection) RawContent() ([]byte, error) {
+	return nil, fmt.Errorf("cannot get raw content")
 }
 
 func (BaseSection) BindStringTable(table *StringTableSection) {
@@ -70,6 +79,10 @@ func newRawSection(header SectionHeaderEntry, buffer []byte) *RawSection {
 		BaseSection: newBaseSection(header),
 		Content:     content,
 	}
+}
+
+func (section *RawSection) RawContent() ([]byte, error) {
+	return section.Content, nil
 }
 
 type StringTableSection struct {
@@ -156,9 +169,12 @@ type SymbolTableSection struct {
 	BaseSection
 
 	Symbols []*Symbol
+
+	stringTable *StringTableSection
 }
 
 func (table *SymbolTableSection) BindStringTable(names *StringTableSection) {
+	table.stringTable = names
 	for _, symbol := range table.Symbols {
 		symbol.Name = names.Get(symbol.NameIndex)
 		val, err := demangle.ToString(symbol.Name)

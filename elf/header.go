@@ -3,6 +3,7 @@
 package elf
 
 import (
+	"encoding/binary"
 	"fmt"
 )
 
@@ -67,6 +68,17 @@ const (
 	DataEncodingTwosComplementLittleEndian = DataEncoding(1) // ELFDATA2LSB
 	DataEncodingTwosComplementBigEndian    = DataEncoding(2) // ELFDATA2MSB
 )
+
+func (encoding DataEncoding) ByteOrder() binary.ByteOrder {
+	switch encoding {
+	case DataEncodingTwosComplementLittleEndian:
+		return binary.LittleEndian
+	case DataEncodingTwosComplementBigEndian:
+		return binary.BigEndian
+	default:
+		panic(fmt.Sprintf("unsupported data encoding (%s)", encoding))
+	}
+}
 
 func (encoding DataEncoding) String() string {
 	switch encoding {

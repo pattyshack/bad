@@ -48,13 +48,13 @@ func loadElf(pid int) (*LoadedElfFile, error) {
 
 	symbolTables := []*elf.SymbolTableSection{}
 
-	section, ok := file.GetSection(symbolTableName)
-	if ok {
+	section := file.GetSection(symbolTableName)
+	if section != nil {
 		symbolTables = append(symbolTables, section.(*elf.SymbolTableSection))
 	}
 
-	section, ok = file.GetSection(dynamicSymbolTableName)
-	if ok {
+	section = file.GetSection(dynamicSymbolTableName)
+	if section != nil {
 		symbolTables = append(symbolTables, section.(*elf.SymbolTableSection))
 	}
 

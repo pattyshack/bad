@@ -6,6 +6,7 @@ Makefile
 anti_debugger
 hello_world
 memory
+multi_cu
 print_longdouble
 reg_read
 reg_write
