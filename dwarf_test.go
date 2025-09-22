@@ -135,3 +135,98 @@ func (DwarfSuite) TestAddressRanges(t *testing.T) {
 		},
 		addressRanges[3])
 }
+
+func (s DwarfSuite) TestLineTable(t *testing.T) {
+	file := s.newFile(t, "test_targets/hello_world")
+
+	expect.Equal(t, 1, len(file.CompileUnits))
+
+	iter, err := file.CompileUnits[0].LineIterator()
+	expect.Nil(t, err)
+	expect.NotNil(t, iter)
+
+	entry1, err := iter.Next()
+	expect.Nil(t, err)
+	expect.NotNil(t, entry1)
+	expect.Equal(t, "hello_world.cpp", entry1.Name)
+	expect.Equal(t, 3, entry1.Line)
+	expect.False(t, entry1.EndSequence)
+
+	entry2, err := iter.Next()
+	expect.Nil(t, err)
+	expect.NotNil(t, entry2)
+	expect.Equal(t, "hello_world.cpp", entry2.Name)
+	expect.Equal(t, 4, entry2.Line)
+	expect.False(t, entry2.EndSequence)
+
+	entry3, err := iter.Next()
+	expect.Nil(t, err)
+	expect.NotNil(t, entry3)
+	expect.Equal(t, "hello_world.cpp", entry3.Name)
+	expect.Equal(t, 5, entry3.Line)
+	expect.False(t, entry3.EndSequence)
+
+	entry4, err := iter.Next()
+	expect.Nil(t, err)
+	expect.NotNil(t, entry4)
+	expect.Equal(t, "hello_world.cpp", entry4.Name)
+	expect.Equal(t, 5, entry4.Line)
+	expect.True(t, entry4.EndSequence)
+
+	entry5, err := iter.Next()
+	expect.Nil(t, err)
+	expect.Nil(t, entry5)
+
+	// test resuming iteration from state snapshots
+
+	for i := 0; i < 3; i++ {
+		iter = entry2.Resume()
+
+		entry3, err = iter.Next()
+		expect.Nil(t, err)
+		expect.NotNil(t, entry3)
+		expect.Equal(t, "hello_world.cpp", entry3.Name)
+		expect.Equal(t, 5, entry3.Line)
+		expect.False(t, entry3.EndSequence)
+
+		entry4, err = iter.Next()
+		expect.Nil(t, err)
+		expect.NotNil(t, entry4)
+		expect.Equal(t, "hello_world.cpp", entry4.Name)
+		expect.Equal(t, 5, entry4.Line)
+		expect.True(t, entry4.EndSequence)
+
+		entry5, err = iter.Next()
+		expect.Nil(t, err)
+		expect.Nil(t, entry5)
+	}
+
+	for i := 0; i < 3; i++ {
+		iter = entry1.Resume()
+
+		entry2, err = iter.Next()
+		expect.Nil(t, err)
+		expect.NotNil(t, entry2)
+		expect.Equal(t, "hello_world.cpp", entry2.Name)
+		expect.Equal(t, 4, entry2.Line)
+		expect.False(t, entry2.EndSequence)
+
+		entry3, err = iter.Next()
+		expect.Nil(t, err)
+		expect.NotNil(t, entry3)
+		expect.Equal(t, "hello_world.cpp", entry3.Name)
+		expect.Equal(t, 5, entry3.Line)
+		expect.False(t, entry3.EndSequence)
+
+		entry4, err = iter.Next()
+		expect.Nil(t, err)
+		expect.NotNil(t, entry4)
+		expect.Equal(t, "hello_world.cpp", entry4.Name)
+		expect.Equal(t, 5, entry4.Line)
+		expect.True(t, entry4.EndSequence)
+
+		entry5, err = iter.Next()
+		expect.Nil(t, err)
+		expect.Nil(t, entry5)
+	}
+}

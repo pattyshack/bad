@@ -30,6 +30,14 @@ func NewCursor(
 	}
 }
 
+func (cursor *Cursor) Clone() *Cursor {
+	return &Cursor{
+		ByteOrder: cursor.ByteOrder,
+		Content:   cursor.Content,
+		Position:  cursor.Position,
+	}
+}
+
 func (cursor *Cursor) remaining() []byte {
 	return cursor.Content[cursor.Position:]
 }

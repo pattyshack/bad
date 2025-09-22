@@ -38,7 +38,7 @@ func (ref DebugInfoEntryReference) Get() (*DebugInfoEntry, error) {
 }
 
 type DebugInfoEntry struct {
-	*File
+	*CompileUnit
 	SectionOffset
 
 	*Abbreviation
@@ -83,7 +83,7 @@ func parseDebugInfoEntry(
 
 	addr := unit.ContentStart + SectionOffset(decode.Position)
 	entry := &DebugInfoEntry{
-		File:          unit.File,
+		CompileUnit:   unit,
 		SectionOffset: addr,
 		Abbreviation:  abbrev,
 		Values:        values,
@@ -207,6 +207,40 @@ func (entry *DebugInfoEntry) Name() (
 	}
 
 	return refEntry.Name()
+}
+
+func (entry *DebugInfoEntry) FileEntry() (*FileEntry, error) {
+	var idx uint64
+	var ok bool
+	if entry.Tag == DW_TAG_inlined_subroutine {
+		idx, ok = entry.Uint(DW_AT_call_file)
+	} else {
+		idx, ok = entry.Uint(DW_AT_decl_file)
+	}
+
+	if !ok {
+		return nil, nil
+	}
+
+	if entry.lineTable == nil {
+		return nil, fmt.Errorf("compile unit has no line table")
+	}
+
+	if idx == 0 || idx-1 >= uint64(len(entry.lineTable.FileEntries)) {
+		return nil, fmt.Errorf("out of bound line table file index")
+	}
+
+	return entry.lineTable.FileEntries[idx-1], nil
+}
+
+func (entry *DebugInfoEntry) Line() (int64, bool) {
+	if entry.Tag == DW_TAG_inlined_subroutine {
+		val, ok := entry.Uint(DW_AT_call_line)
+		return int64(val), ok
+	}
+
+	val, ok := entry.Uint(DW_AT_decl_line)
+	return int64(val), ok
 }
 
 func (entry *DebugInfoEntry) AddressRanges() (AddressRanges, error) {

@@ -94,18 +94,21 @@ func newDebugger(tracer *ptrace.Tracer, ownsProcess bool) (*Debugger, error) {
 
 	allocator.SetDebugger(db)
 
+	_, err := db.waitForSignal()
+	if err != nil {
+		_ = db.Close()
+		return nil, err
+	}
+
+	// NOTE: loadElf must be called after waitForSignal to avoid procfs data
+	// race (the debugger could read procfs before the process entry point is
+	// written to procfs)
 	file, err := loadElf(db.Pid)
 	if err != nil {
 		_ = db.Close()
 		return nil, err
 	}
 	db.LoadedElfFile = file
-
-	_, err = db.waitForSignal()
-	if err != nil {
-		_ = db.Close()
-		return nil, err
-	}
 
 	if ownsProcess {
 		err = tracer.SetOptions(ptrace.O_EXITKILL | ptrace.O_TRACESYSGOOD)
@@ -299,7 +302,11 @@ func (db *Debugger) newProcessState(
 		return ProcessState{}, err
 	}
 	state.NextInstructionAddress = pc
-	state.Symbol = db.LoadedElfFile.SymbolSpans(pc)
+
+	// NOTE: could be nil if there's an error during initialization
+	if db.LoadedElfFile != nil {
+		state.Symbol = db.LoadedElfFile.SymbolSpans(pc)
+	}
 
 	if status.StopSignal() == syscallTrapSignal {
 		state.TrapReason = SyscallTrap

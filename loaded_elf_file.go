@@ -6,6 +6,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/pattyshack/bad/dwarf"
 	"github.com/pattyshack/bad/elf"
 	"github.com/pattyshack/bad/procfs"
 )
@@ -19,6 +20,8 @@ type LoadedElfFile struct {
 	*elf.File
 	LoadBias uint64
 
+	Dwarf *dwarf.File // optional
+
 	symbolTables []*elf.SymbolTableSection
 }
 
@@ -31,6 +34,12 @@ func loadElf(pid int) (*LoadedElfFile, error) {
 	file, err := elf.ParseBytes(content)
 	if err != nil {
 		return nil, fmt.Errorf("failed to parse elf file: %w", err)
+	}
+
+	dwarfFile, err := dwarf.NewFile(file)
+	if err != nil {
+		fmt.Println("WARNING. failed to parse dwarf file:", err)
+		dwarfFile = nil
 	}
 
 	aux, err := procfs.GetAuxiliaryVector(pid)
@@ -60,6 +69,7 @@ func loadElf(pid int) (*LoadedElfFile, error) {
 
 	return &LoadedElfFile{
 		File:         file,
+		Dwarf:        dwarfFile,
 		LoadBias:     loadBias,
 		symbolTables: symbolTables,
 	}, nil

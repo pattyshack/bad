@@ -2,6 +2,8 @@ package dwarf
 
 import (
 	"fmt"
+	"path"
+	"strings"
 
 	"github.com/pattyshack/bad/elf"
 )
@@ -22,8 +24,9 @@ type CompileUnit struct {
 	Content           []byte
 
 	// nil indicates the compile unit's content has not been parsed yet.
-	root    *DebugInfoEntry
-	entries []*DebugInfoEntry
+	root      *DebugInfoEntry
+	entries   []*DebugInfoEntry
+	lineTable *LineTable
 }
 
 func parseCompileUnit(
@@ -205,6 +208,99 @@ func (unit *CompileUnit) Visit(enter ProcessFunc, exit ProcessFunc) error {
 	return root.Visit(enter, exit)
 }
 
+func (unit *CompileUnit) LineIterator() (*LineTableIterator, error) {
+	err := unit.maybeParseDebugInfoEntries()
+	if err != nil {
+		return nil, err
+	}
+
+	if unit.lineTable == nil {
+		return nil, fmt.Errorf("compile unit has no line table")
+	}
+
+	return unit.lineTable.Iterator(), nil
+}
+
+func (unit *CompileUnit) GetLineEntryByAddress(
+	address elf.FileAddress,
+) (
+	*LineEntry,
+	error,
+) {
+	iter, err := unit.LineIterator()
+	if err != nil {
+		return nil, err
+	}
+
+	prev, err := iter.Next()
+	if err != nil {
+		return nil, err
+	}
+	if prev == nil {
+		return nil, nil
+	}
+
+	for {
+		curr, err := iter.Next()
+		if err != nil {
+			return nil, err
+		}
+		if curr == nil {
+			return nil, nil
+		}
+
+		if prev.FileAddress <= address &&
+			address < curr.FileAddress &&
+			// NOTE: end sequence entries aren't true entries in the table.
+			!prev.EndSequence {
+
+			return prev, nil
+		}
+
+		prev = curr
+	}
+}
+
+func (unit *CompileUnit) GetLineEntriesByLine(
+	pathName string,
+	line int64,
+) (
+	[]*LineEntry,
+	error,
+) {
+	iter, err := unit.LineIterator()
+	if err != nil {
+		return nil, err
+	}
+
+	pathName = path.Clean(pathName)
+	result := []*LineEntry{}
+	for {
+		entry, err := iter.Next()
+		if err != nil {
+			return nil, err
+		}
+		if entry == nil {
+			return result, nil
+		}
+
+		if entry.Line != line {
+			continue
+		}
+
+		matches := false
+		if path.IsAbs(pathName) {
+			matches = entry.Path() == pathName
+		} else {
+			matches = strings.HasSuffix(entry.Path(), pathName)
+		}
+
+		if matches {
+			result = append(result, entry)
+		}
+	}
+}
+
 func (unit *CompileUnit) maybeParseDebugInfoEntries() error {
 	if unit.root != nil {
 		return nil
@@ -257,8 +353,27 @@ func (unit *CompileUnit) maybeParseDebugInfoEntries() error {
 		return fmt.Errorf("failed to parse DIES. not enough null DIEs")
 	}
 
+	index, ok := root.Offset(DW_AT_stmt_list)
+	if ok {
+		compilationDir, _ := root.String(DW_AT_comp_dir)
+		if compilationDir == "" {
+			return fmt.Errorf("invalid DW_AT_comp_dir value in root DIE")
+		}
+
+		lineTable, ok := unit.LineTables[index]
+		if ok {
+			err := lineTable.setCompileUnit(unit, compilationDir)
+			if err != nil {
+				return err
+			}
+
+			unit.lineTable = lineTable
+		}
+	}
+
 	unit.root = root
 	unit.entries = entries
+
 	return nil
 }
 

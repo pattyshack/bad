@@ -9,23 +9,17 @@ type SectionOffset int
 type File struct {
 	*elf.File
 
-	*AbbreviationSection
-	*InformationSection
+	// NOTE: string, address ranges and line sections are optional
 	*StringSection
 	*AddressRangesSection
+	*LineSection
+
+	// NOTE: abbreviation and information sections are required
+	*AbbreviationSection
+	*InformationSection
 }
 
 func NewFile(elfFile *elf.File) (*File, error) {
-	abbrevSection, err := NewAbbreviationSection(elfFile)
-	if err != nil {
-		return nil, err
-	}
-
-	infoSection, err := NewInformationSection(elfFile)
-	if err != nil {
-		return nil, err
-	}
-
 	stringSection, err := NewStringSection(elfFile)
 	if err != nil {
 		return nil, err
@@ -36,12 +30,28 @@ func NewFile(elfFile *elf.File) (*File, error) {
 		return nil, err
 	}
 
+	lineSection, err := NewLineSection(elfFile)
+	if err != nil {
+		return nil, err
+	}
+
+	abbrevSection, err := NewAbbreviationSection(elfFile)
+	if err != nil {
+		return nil, err
+	}
+
+	infoSection, err := NewInformationSection(elfFile)
+	if err != nil {
+		return nil, err
+	}
+
 	file := &File{
 		File:                 elfFile,
-		AbbreviationSection:  abbrevSection,
-		InformationSection:   infoSection,
 		StringSection:        stringSection,
 		AddressRangesSection: addressRangesSection,
+		LineSection:          lineSection,
+		AbbreviationSection:  abbrevSection,
+		InformationSection:   infoSection,
 	}
 	infoSection.SetParent(file)
 
