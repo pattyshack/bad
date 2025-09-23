@@ -4,11 +4,11 @@ import (
 	"fmt"
 	"strconv"
 
-	"github.com/pattyshack/bad"
+	"github.com/pattyshack/bad/debugger/catchpoint"
 )
 
 type syscallCatchPolicyCommands struct {
-	policy *bad.SyscallCatchPolicy
+	policy *catchpoint.SyscallCatchPolicy
 }
 
 func (cmd syscallCatchPolicyCommands) SubCommands() subCommands {
@@ -57,9 +57,9 @@ func (cmd syscallCatchPolicyCommands) CatchList(args []string) error {
 		return nil
 	}
 
-	ids := []bad.SyscallId{}
+	ids := []catchpoint.SyscallId{}
 	for _, arg := range args {
-		id, ok := bad.GetSyscallIdByName(arg)
+		id, ok := catchpoint.SyscallIdByName(arg)
 		if ok {
 			ids = append(ids, id)
 			continue
@@ -71,7 +71,7 @@ func (cmd syscallCatchPolicyCommands) CatchList(args []string) error {
 			return nil
 		}
 
-		id, ok = bad.GetSyscallIdByNumber(int(num))
+		id, ok = catchpoint.SyscallIdByNumber(int(num))
 		if !ok {
 			fmt.Println("invalid syscall:", arg)
 			return nil

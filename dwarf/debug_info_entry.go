@@ -56,6 +56,8 @@ func parseDebugInfoEntry(
 	*DebugInfoEntry,
 	error,
 ) {
+	startAddr := unit.ContentStart + SectionOffset(decode.Position)
+
 	code, err := decode.ULEB128(64)
 	if err != nil {
 		return 0, nil, fmt.Errorf("failed to parse DIE. invalid code: %w", err)
@@ -81,10 +83,9 @@ func parseDebugInfoEntry(
 		values = append(values, value)
 	}
 
-	addr := unit.ContentStart + SectionOffset(decode.Position)
 	entry := &DebugInfoEntry{
 		CompileUnit:   unit,
-		SectionOffset: addr,
+		SectionOffset: startAddr,
 		Abbreviation:  abbrev,
 		Values:        values,
 	}

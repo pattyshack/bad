@@ -1,4 +1,4 @@
-package bad
+package catchpoint
 
 type catchMode int
 

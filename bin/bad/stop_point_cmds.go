@@ -5,46 +5,85 @@ import (
 	"fmt"
 	"strconv"
 
-	"github.com/pattyshack/bad"
+	"github.com/pattyshack/bad/debugger"
+	. "github.com/pattyshack/bad/debugger/common"
+	"github.com/pattyshack/bad/debugger/stoppoint"
+)
+
+const (
+	addressesBreakPoint = 1
+	lineBreakPoint      = 2
+	functionBreakPoint  = 3
 )
 
 type stopPointCommands struct {
-	debugger   *bad.Debugger
-	stopPoints *bad.StopPointSet
+	debugger   *debugger.Debugger
+	stopPoints *stoppoint.StopPointSet
+}
 
-	isBreakPoints bool // false = watch point
+func (cmd stopPointCommands) setBreakpointSubCommands() subCommands {
+	return subCommands{
+		{
+			name:        "function",
+			description: " [-h] <name>      - set function break point",
+			command: runCmd(func(args []string) error {
+				return cmd.setBreakPoint(functionBreakPoint, args)
+			}),
+		},
+		{
+			name:        "line",
+			description: " [-h] <path> <line>   - set line break point",
+			command: runCmd(func(args []string) error {
+				return cmd.setBreakPoint(lineBreakPoint, args)
+			}),
+		},
+		{
+			name:        "addresses",
+			description: " [-h] <address>+ - set addresses break point",
+			command: runCmd(func(args []string) error {
+				return cmd.setBreakPoint(addressesBreakPoint, args)
+			}),
+		},
+	}
 }
 
 func (cmd stopPointCommands) SubCommands() subCommands {
-	setDesc := " <address> [-h] - create break point (-h for hardware)"
-	if !cmd.isBreakPoints {
+	var setCmd command
+	setDesc := ""
+	if cmd.stopPoints.IsWatchPoints() {
 		setDesc = " <address> <mode=w|rw|e> <size=1|2|4|8>\n" +
 			"    - create watch point"
+		setCmd = runCmd(cmd.setWatchPoint)
+	} else {
+		setDesc = "                      - subcommands for setting break points"
+		setCmd = cmd.setBreakpointSubCommands()
 	}
+
 	return subCommands{
 		{
-			name:        "list",
-			description: fmt.Sprintf("               - list all %ss", cmd.name()),
-			command:     runCmd(cmd.list),
+			name: "list",
+			description: fmt.Sprintf("                     - list all %ss",
+				cmd.name()),
+			command: runCmd(cmd.list),
 		},
 		{
 			name:        "set",
 			description: setDesc,
-			command:     runCmd(cmd.set),
+			command:     setCmd,
 		},
 		{
 			name:        "remove",
-			description: " <address>   - remove " + cmd.name(),
+			description: " <id>              - remove " + cmd.name(),
 			command:     runCmd(cmd.remove),
 		},
 		{
 			name:        "enable",
-			description: " <address>   - enable " + cmd.name(),
+			description: " <id> [<site id>]  - enable " + cmd.name(),
 			command:     runCmd(cmd.enable),
 		},
 		{
 			name:        "disable",
-			description: " <address>  - disable " + cmd.name(),
+			description: " <id> [<site id>] - disable " + cmd.name(),
 			command:     runCmd(cmd.disable),
 		},
 	}
@@ -52,133 +91,209 @@ func (cmd stopPointCommands) SubCommands() subCommands {
 }
 
 func (cmd stopPointCommands) name() string {
-	if cmd.isBreakPoints {
-		return "break point"
-	} else {
+	if cmd.stopPoints.IsWatchPoints() {
 		return "watch point"
+	} else {
+		return "break point"
 	}
 }
 
 func (cmd stopPointCommands) list(args []string) error {
-	spList := cmd.stopPoints.List()
-	if len(spList) == 0 {
+	stopPoints := cmd.stopPoints.List()
+	if len(stopPoints) == 0 {
 		fmt.Println("No", cmd.name(), "set")
 		return nil
 	}
 
 	fmt.Printf("Current %ss\n", cmd.name())
 
-	for _, sp := range spList {
-		enabledStr := "false"
-		if sp.IsEnabled() {
-			enabledStr = "true "
-		}
-
-		if cmd.isBreakPoints {
+	for _, point := range stopPoints {
+		fmt.Printf("  %d. %s (enabled = %v)\n",
+			point.Id(),
+			point.Type(),
+			point.IsEnabled())
+		fmt.Printf("     resolver: %s\n", point.Resolver())
+		fmt.Println("     resolved sites:")
+		for idx, site := range point.Sites() {
+			fmt.Printf("       %d. %s\n", idx, site.Key())
 			fmt.Printf(
-				"  address = %s  enabled = %s  kind = %v\n",
-				sp.Address(),
-				enabledStr,
-				sp.Type().Kind)
-		} else {
-			fmt.Printf(
-				"  address = %s  enabled = %s  size = %d  mode = %s\n",
-				sp.Address(),
-				enabledStr,
-				sp.Type().WatchSize,
-				sp.Type().Mode)
+				"          enabled = %v (ref count = %d)\n",
+				site.IsEnabled(),
+				site.RefCount())
 		}
 	}
 
 	return nil
 }
 
-func (cmd stopPointCommands) parseBreakPoint(
+func (cmd stopPointCommands) parseAddressesBreakPoint(
 	args []string,
 ) (
-	bad.VirtualAddress,
-	bad.StopPointOptions,
+	stoppoint.StopSiteResolver,
+	stoppoint.StopSiteType,
 	error,
 ) {
-	if len(args) < 1 {
-		return 0, bad.StopPointOptions{}, fmt.Errorf(
-			"failed to set break point. address not specified")
+	siteType := stoppoint.NewBreakSiteType(false)
+	if len(args) > 0 && args[0] == "-h" {
+		siteType.IsHardware = true
+		args = args[1:]
 	}
 
-	addr, err := cmd.debugger.ParseAddress(args[0])
-	if err != nil {
-		return 0, bad.StopPointOptions{}, fmt.Errorf(
-			"failed to set break point: %w",
-			err)
+	addresses := VirtualAddresses{}
+	for _, arg := range args {
+		address, err := cmd.debugger.LoadedElf.Files[0].ParseAddress(arg)
+		if err != nil {
+			return nil, stoppoint.StopSiteType{}, fmt.Errorf(
+				"failed to set watch point: %w",
+				err)
+		}
+
+		addresses = append(addresses, address)
 	}
 
-	options := bad.SoftwareBreakPointSiteOptions()
-	if len(args) > 1 && args[1] == "-h" {
-		options = bad.HardwareBreakPointSiteOptions()
+	if len(addresses) == 0 {
+		return nil, stoppoint.StopSiteType{}, fmt.Errorf(
+			"failed to set break point. expected at least one address")
 	}
 
-	return addr, options, nil
+	return cmd.debugger.NewAddressResolver(addresses...), siteType, nil
 }
 
-func (cmd stopPointCommands) parseWatchPoint(
+func (cmd stopPointCommands) parseLineBreakPoint(
 	args []string,
 ) (
-	bad.VirtualAddress,
-	bad.StopPointOptions,
+	stoppoint.StopSiteResolver,
+	stoppoint.StopSiteType,
 	error,
 ) {
-	if len(args) != 3 {
-		return 0, bad.StopPointOptions{}, fmt.Errorf(
-			"failed to set watch point. expected 3 arguments: <addr> <mode> <size>")
+	siteType := stoppoint.NewBreakSiteType(false)
+	if len(args) > 0 && args[0] == "-h" {
+		siteType.IsHardware = true
+		args = args[1:]
 	}
-	addr, err := cmd.debugger.ParseAddress(args[0])
+
+	if len(args) != 2 {
+		return nil, stoppoint.StopSiteType{}, fmt.Errorf(
+			"failed to set break point. expected <path> <line>")
+	}
+
+	path := args[0]
+	line, err := strconv.ParseInt(args[1], 10, 32)
 	if err != nil {
-		return 0, bad.StopPointOptions{}, fmt.Errorf(
-			"failed to set watch point: %w",
-			err)
+		return nil, stoppoint.StopSiteType{}, fmt.Errorf(
+			"failed to set break point. invalid line: %w", err)
 	}
 
-	var mode bad.StopPointMode
-	switch args[1] {
-	case "w":
-		mode = bad.WriteMode
-	case "rw":
-		mode = bad.ReadWriteMode
-	case "e":
-		mode = bad.ExecuteMode
-	default:
-		return 0, bad.StopPointOptions{}, fmt.Errorf(
-			"failed to set watch point. invalid mode (%s). expected w|rw|e",
-			args[1])
-	}
-
-	size, err := strconv.ParseInt(args[2], 0, 8)
-	if err != nil {
-		return 0, bad.StopPointOptions{}, fmt.Errorf(
-			"failed to parse watch point size: %w",
-			err)
-	}
-
-	return addr, bad.HardwareWatchPointOptions(mode, int(size)), nil
+	return cmd.debugger.NewLineResolver(path, int(line)), siteType, nil
 }
 
-func (cmd stopPointCommands) set(args []string) error {
-	var addr bad.VirtualAddress
-	var options bad.StopPointOptions
+func (cmd stopPointCommands) parseFunctionBreakPoint(
+	args []string,
+) (
+	stoppoint.StopSiteResolver,
+	stoppoint.StopSiteType,
+	error,
+) {
+	siteType := stoppoint.NewBreakSiteType(false)
+	if len(args) > 0 && args[0] == "-h" {
+		siteType.IsHardware = true
+		args = args[1:]
+	}
+
+	if len(args) != 1 {
+		return nil, stoppoint.StopSiteType{}, fmt.Errorf(
+			"failed to set break point. expected one function name")
+	}
+
+	return cmd.debugger.NewFunctionResolver(args[0]), siteType, nil
+}
+
+func (cmd stopPointCommands) setBreakPoint(kind int, args []string) error {
+	var resolver stoppoint.StopSiteResolver
+	var siteType stoppoint.StopSiteType
 	var err error
-	if cmd.isBreakPoints {
-		addr, options, err = cmd.parseBreakPoint(args)
-	} else {
-		addr, options, err = cmd.parseWatchPoint(args)
+
+	switch kind {
+	case addressesBreakPoint:
+		resolver, siteType, err = cmd.parseAddressesBreakPoint(args)
+	case lineBreakPoint:
+		resolver, siteType, err = cmd.parseLineBreakPoint(args)
+	case functionBreakPoint:
+		resolver, siteType, err = cmd.parseFunctionBreakPoint(args)
+	default:
+		panic("should never happen")
 	}
 	if err != nil {
 		fmt.Println(err)
 		return nil
 	}
 
-	_, err = cmd.stopPoints.Set(addr, options)
+	_, err = cmd.stopPoints.Set(resolver, siteType, true)
 	if err != nil {
-		if errors.Is(err, bad.ErrInvalidArgument) {
+		if errors.Is(err, ErrInvalidArgument) {
+			fmt.Println(err)
+			return nil
+		}
+		return err
+	}
+
+	return nil
+}
+
+func (cmd stopPointCommands) parseWatchPoint(
+	args []string,
+) (
+	stoppoint.StopSiteResolver,
+	stoppoint.StopSiteType,
+	error,
+) {
+	if len(args) != 3 {
+		return nil, stoppoint.StopSiteType{}, fmt.Errorf(
+			"failed to set watch point. expected 3 arguments: <addr> <mode> <size>")
+	}
+	addr, err := cmd.debugger.LoadedElf.Files[0].ParseAddress(args[0])
+	if err != nil {
+		return nil, stoppoint.StopSiteType{}, fmt.Errorf(
+			"failed to set watch point: %w",
+			err)
+	}
+
+	var mode stoppoint.StopSiteMode
+	switch args[1] {
+	case "w":
+		mode = stoppoint.WriteMode
+	case "rw":
+		mode = stoppoint.ReadWriteMode
+	case "e":
+		mode = stoppoint.ExecuteMode
+	default:
+		return nil, stoppoint.StopSiteType{}, fmt.Errorf(
+			"failed to set watch point. invalid mode (%s). expected w|rw|e",
+			args[1])
+	}
+
+	size, err := strconv.ParseInt(args[2], 0, 8)
+	if err != nil {
+		return nil, stoppoint.StopSiteType{}, fmt.Errorf(
+			"failed to parse watch point size: %w",
+			err)
+	}
+
+	resolver := cmd.debugger.NewAddressResolver(addr)
+	siteType := stoppoint.NewWatchSiteType(mode, int(size))
+	return resolver, siteType, nil
+}
+
+func (cmd stopPointCommands) setWatchPoint(args []string) error {
+	resolver, siteType, err := cmd.parseWatchPoint(args)
+	if err != nil {
+		fmt.Println(err)
+		return nil
+	}
+
+	_, err = cmd.stopPoints.Set(resolver, siteType, true)
+	if err != nil {
+		if errors.Is(err, ErrInvalidArgument) {
 			fmt.Println(err)
 			return nil
 		}
@@ -190,19 +305,19 @@ func (cmd stopPointCommands) set(args []string) error {
 
 func (cmd stopPointCommands) remove(args []string) error {
 	if len(args) < 1 {
-		fmt.Printf("failed to remove %s. address not specified\n", cmd.name())
+		fmt.Printf("failed to remove %s. id not specified\n", cmd.name())
 		return nil
 	}
 
-	addr, err := cmd.debugger.ParseAddress(args[0])
+	id, err := strconv.ParseInt(args[0], 10, 32)
 	if err != nil {
-		fmt.Printf("failed to remove %s: %s\n", cmd.name(), err)
+		fmt.Printf("failed to parse %s id: %s\n", cmd.name(), err)
 		return nil
 	}
 
-	err = cmd.stopPoints.Remove(addr)
+	err = cmd.stopPoints.Remove(id)
 	if err != nil {
-		if errors.Is(err, bad.ErrInvalidArgument) {
+		if errors.Is(err, ErrInvalidArgument) {
 			fmt.Println(err)
 			return nil
 		}
@@ -213,53 +328,77 @@ func (cmd stopPointCommands) remove(args []string) error {
 }
 
 func (cmd stopPointCommands) enable(args []string) error {
-	if len(args) < 1 {
-		fmt.Printf("failed to enable %s. address not specified\n", cmd.name())
+	if len(args) == 0 {
+		fmt.Printf("failed to enable %s. id not specified\n", cmd.name())
 		return nil
 	}
 
-	addr, err := cmd.debugger.ParseAddress(args[0])
+	id, err := strconv.ParseInt(args[0], 10, 32)
 	if err != nil {
-		fmt.Printf("failed to enable %s: %s\n", cmd.name(), err)
+		fmt.Printf("failed to parse %s id: %s\n", cmd.name(), err)
 		return nil
 	}
 
-	sp, ok := cmd.stopPoints.Get(addr)
+	sp, ok := cmd.stopPoints.Get(id)
 	if !ok {
-		fmt.Printf("no %s found at %s\n", cmd.name(), addr)
+		fmt.Printf("%s (id=%d) not found\n", cmd.name(), id)
 		return nil
 	}
 
-	err = sp.Enable()
-	if err != nil {
-		return err
+	if len(args) == 1 {
+		return sp.Enable()
 	}
 
-	return nil
+	idx, err := strconv.ParseInt(args[1], 10, 32)
+	if err != nil {
+		fmt.Printf("failed to parse %s %d site index: %s\n", cmd.name(), id, err)
+		return nil
+	}
+
+	sites := sp.Sites()
+	siteIdx := int(idx)
+	if siteIdx < 0 || siteIdx >= len(sites) {
+		fmt.Printf("%s %d site index out of bound: %d", cmd.name(), id, siteIdx)
+		return nil
+	}
+
+	return sites[siteIdx].Enable()
 }
 
 func (cmd stopPointCommands) disable(args []string) error {
-	if len(args) < 1 {
-		fmt.Printf("failed to disable %s. address not specified\n", cmd.name())
+	if len(args) == 0 {
+		fmt.Printf("failed to disable %s. id not specified\n", cmd.name())
 		return nil
 	}
 
-	addr, err := cmd.debugger.ParseAddress(args[0])
+	id, err := strconv.ParseInt(args[0], 10, 32)
 	if err != nil {
-		fmt.Printf("failed to disable %s: %s\n", cmd.name(), err)
+		fmt.Printf("failed to parse %s id: %s\n", cmd.name(), err)
 		return nil
 	}
 
-	sp, ok := cmd.stopPoints.Get(addr)
+	sp, ok := cmd.stopPoints.Get(id)
 	if !ok {
-		fmt.Printf("no %s found at %s\n", cmd.name(), addr)
+		fmt.Printf("%s (id=%d) not found\n", cmd.name(), id)
 		return nil
 	}
 
-	err = sp.Disable()
-	if err != nil {
-		return err
+	if len(args) == 1 {
+		return sp.Disable()
 	}
 
-	return nil
+	idx, err := strconv.ParseInt(args[1], 10, 32)
+	if err != nil {
+		fmt.Printf("failed to parse %s %d site index: %s\n", cmd.name(), id, err)
+		return nil
+	}
+
+	sites := sp.Sites()
+	siteIdx := int(idx)
+	if siteIdx < 0 || siteIdx >= len(sites) {
+		fmt.Printf("%s %d site index out of bound: %d", cmd.name(), id, siteIdx)
+		return nil
+	}
+
+	return sites[siteIdx].Disable()
 }

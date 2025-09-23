@@ -4,18 +4,19 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/pattyshack/bad"
+	"github.com/pattyshack/bad/debugger"
+	"github.com/pattyshack/bad/debugger/registers"
 )
 
-func readRegister(db *bad.Debugger, args []string) error {
+func readRegister(db *debugger.Debugger, args []string) error {
 	if len(args) > 0 && args[0] != "all" {
-		reg, ok := db.RegisterByName(args[0])
+		reg, ok := registers.ByName(args[0])
 		if !ok {
 			fmt.Println("Invalid register:", args[0])
 			return nil
 		}
 
-		state, err := db.GetRegisterState()
+		state, err := db.Registers.GetState()
 		if err != nil {
 			return err
 		}
@@ -24,23 +25,23 @@ func readRegister(db *bad.Debugger, args []string) error {
 		return nil
 	}
 
-	state, err := db.GetRegisterState()
+	state, err := db.Registers.GetState()
 	if err != nil {
 		return err
 	}
 
-	for _, reg := range db.Registers {
+	for _, reg := range registers.OrderedSpecs {
 		// Skip printing general sub registers
-		if reg.Class == bad.GeneralRegister && reg.DwarfId == -1 {
+		if reg.Class == registers.GeneralClass && reg.DwarfId == -1 {
 			continue
 		}
 
-		if len(args) == 0 && reg.Class != bad.GeneralRegister {
+		if len(args) == 0 && reg.Class != registers.GeneralClass {
 			continue
 		}
 
 		name := reg.Name
-		if reg.Class == bad.FloatingPointRegister {
+		if reg.Class == registers.FloatingPointClass {
 			if strings.HasPrefix(name, "st") {
 				name = fmt.Sprintf("st%s/mm%s", name[2:], name[2:])
 			} else if strings.HasPrefix(name, "mm") {
@@ -58,13 +59,13 @@ func readRegister(db *bad.Debugger, args []string) error {
 	return nil
 }
 
-func writeRegister(db *bad.Debugger, args []string) error {
+func writeRegister(db *debugger.Debugger, args []string) error {
 	if len(args) != 2 {
 		fmt.Println("Expected two arguments: <register> <value>")
 		return nil
 	}
 
-	reg, ok := db.RegisterByName(args[0])
+	reg, ok := registers.ByName(args[0])
 	if !ok {
 		fmt.Println("Invalid register:", args[0])
 		return nil
@@ -76,7 +77,7 @@ func writeRegister(db *bad.Debugger, args []string) error {
 		return nil
 	}
 
-	state, err := db.GetRegisterState()
+	state, err := db.Registers.GetState()
 	if err != nil {
 		return err
 	}
@@ -87,5 +88,5 @@ func writeRegister(db *bad.Debugger, args []string) error {
 		return nil
 	}
 
-	return db.SetRegisterState(state)
+	return db.Registers.SetState(state)
 }

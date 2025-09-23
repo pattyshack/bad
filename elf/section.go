@@ -10,6 +10,8 @@ import (
 type FileAddress uint64
 
 type Section interface {
+	File() *File
+
 	Header() SectionHeaderEntry
 
 	BindSectionNameTable(sectionNames *StringTableSection)
@@ -27,14 +29,20 @@ type Section interface {
 type BaseSection struct {
 	SectionHeaderEntry
 
+	file             *File
 	sectionNameTable *StringTableSection
 	name             string
 }
 
-func newBaseSection(header SectionHeaderEntry) BaseSection {
+func newBaseSection(file *File, header SectionHeaderEntry) BaseSection {
 	return BaseSection{
 		SectionHeaderEntry: header,
+		file:               file,
 	}
+}
+
+func (base *BaseSection) File() *File {
+	return base.file
 }
 
 func (base *BaseSection) Header() SectionHeaderEntry {
@@ -71,12 +79,16 @@ type RawSection struct {
 	Content []byte
 }
 
-func newRawSection(header SectionHeaderEntry, buffer []byte) *RawSection {
+func newRawSection(
+	file *File,
+	header SectionHeaderEntry,
+	buffer []byte,
+) *RawSection {
 	content := make([]byte, len(buffer))
 	copy(content, buffer)
 
 	return &RawSection{
-		BaseSection: newBaseSection(header),
+		BaseSection: newBaseSection(file, header),
 		Content:     content,
 	}
 }
@@ -92,6 +104,7 @@ type StringTableSection struct {
 }
 
 func NewStringTableSection(
+	file *File,
 	header SectionHeaderEntry,
 	buffer []byte,
 ) *StringTableSection {
@@ -99,7 +112,7 @@ func NewStringTableSection(
 	copy(content, buffer)
 
 	return &StringTableSection{
-		BaseSection: newBaseSection(header),
+		BaseSection: newBaseSection(file, header),
 		Content:     content,
 	}
 }
@@ -229,11 +242,12 @@ type NoteSection struct {
 }
 
 func newNoteSection(
+	file *File,
 	header SectionHeaderEntry,
 	entries []NoteEntry,
 ) *NoteSection {
 	return &NoteSection{
-		BaseSection: newBaseSection(header),
+		BaseSection: newBaseSection(file, header),
 		Entries:     entries,
 	}
 }

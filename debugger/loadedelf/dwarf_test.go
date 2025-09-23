@@ -1,4 +1,4 @@
-package bad
+package loadedelf
 
 import (
 	"encoding/binary"
@@ -21,7 +21,7 @@ func TestDwarf(t *testing.T) {
 }
 
 func (DwarfSuite) newFile(t *testing.T, path string) *dwarf.File {
-	content, err := os.ReadFile("test_targets/hello_world")
+	content, err := os.ReadFile("../test_targets/hello_world")
 	expect.Nil(t, err)
 
 	elfFile, err := elf.ParseBytes(content)
@@ -34,7 +34,7 @@ func (DwarfSuite) newFile(t *testing.T, path string) *dwarf.File {
 }
 
 func (s DwarfSuite) TestParseBasic(t *testing.T) {
-	file := s.newFile(t, "test_targets/hello_world")
+	file := s.newFile(t, "../test_targets/hello_world")
 
 	expect.Equal(t, 1, len(file.CompileUnits))
 	unit := file.CompileUnits[0]
@@ -50,7 +50,7 @@ func (s DwarfSuite) TestParseBasic(t *testing.T) {
 }
 
 func (s DwarfSuite) TestFindFunction(t *testing.T) {
-	file := s.newFile(t, "test_targets/multi_cu")
+	file := s.newFile(t, "../test_targets/multi_cu")
 
 	// XXX: gcc compiled multi_cu into a single compile unit ....
 	// expect.True(t, len(file.CompileUnits) > 1)
@@ -137,96 +137,93 @@ func (DwarfSuite) TestAddressRanges(t *testing.T) {
 }
 
 func (s DwarfSuite) TestLineTable(t *testing.T) {
-	file := s.newFile(t, "test_targets/hello_world")
+	file := s.newFile(t, "../test_targets/hello_world")
 
 	expect.Equal(t, 1, len(file.CompileUnits))
 
-	iter, err := file.CompileUnits[0].LineIterator()
+	entry1, err := file.CompileUnits[0].LineIterator()
 	expect.Nil(t, err)
-	expect.NotNil(t, iter)
-
-	entry1, err := iter.Next()
-	expect.Nil(t, err)
+	expect.NotNil(t, entry1)
 	expect.NotNil(t, entry1)
 	expect.Equal(t, "hello_world.cpp", entry1.Name)
 	expect.Equal(t, 3, entry1.Line)
 	expect.False(t, entry1.EndSequence)
 
-	entry2, err := iter.Next()
+	entry2, err := entry1.Next()
 	expect.Nil(t, err)
 	expect.NotNil(t, entry2)
 	expect.Equal(t, "hello_world.cpp", entry2.Name)
 	expect.Equal(t, 4, entry2.Line)
 	expect.False(t, entry2.EndSequence)
 
-	entry3, err := iter.Next()
+	entry3, err := entry2.Next()
 	expect.Nil(t, err)
 	expect.NotNil(t, entry3)
 	expect.Equal(t, "hello_world.cpp", entry3.Name)
 	expect.Equal(t, 5, entry3.Line)
 	expect.False(t, entry3.EndSequence)
 
-	entry4, err := iter.Next()
+	entry4, err := entry3.Next()
 	expect.Nil(t, err)
 	expect.NotNil(t, entry4)
 	expect.Equal(t, "hello_world.cpp", entry4.Name)
 	expect.Equal(t, 5, entry4.Line)
 	expect.True(t, entry4.EndSequence)
 
-	entry5, err := iter.Next()
+	entry5, err := entry4.Next()
 	expect.Nil(t, err)
 	expect.Nil(t, entry5)
 
 	// test resuming iteration from state snapshots
 
 	for i := 0; i < 3; i++ {
-		iter = entry2.Resume()
+		iter := entry2
 
-		entry3, err = iter.Next()
+		iter, err = iter.Next()
 		expect.Nil(t, err)
-		expect.NotNil(t, entry3)
-		expect.Equal(t, "hello_world.cpp", entry3.Name)
-		expect.Equal(t, 5, entry3.Line)
-		expect.False(t, entry3.EndSequence)
+		expect.NotNil(t, iter)
+		expect.Equal(t, "hello_world.cpp", iter.Name)
+		expect.Equal(t, 5, iter.Line)
+		expect.False(t, iter.EndSequence)
 
-		entry4, err = iter.Next()
+		iter, err = iter.Next()
 		expect.Nil(t, err)
-		expect.NotNil(t, entry4)
-		expect.Equal(t, "hello_world.cpp", entry4.Name)
-		expect.Equal(t, 5, entry4.Line)
-		expect.True(t, entry4.EndSequence)
+		expect.NotNil(t, iter)
+		expect.Equal(t, "hello_world.cpp", iter.Name)
+		expect.Equal(t, 5, iter.Line)
+		expect.True(t, iter.EndSequence)
 
-		entry5, err = iter.Next()
+		iter, err = iter.Next()
 		expect.Nil(t, err)
-		expect.Nil(t, entry5)
+		expect.Nil(t, iter)
 	}
 
 	for i := 0; i < 3; i++ {
-		iter = entry1.Resume()
+		iter := entry1
 
-		entry2, err = iter.Next()
+		iter, err = iter.Next()
 		expect.Nil(t, err)
-		expect.NotNil(t, entry2)
-		expect.Equal(t, "hello_world.cpp", entry2.Name)
-		expect.Equal(t, 4, entry2.Line)
-		expect.False(t, entry2.EndSequence)
+		expect.NotNil(t, iter)
+		expect.Equal(t, "hello_world.cpp", iter.Name)
+		expect.Equal(t, 4, iter.Line)
+		expect.False(t, iter.EndSequence)
 
-		entry3, err = iter.Next()
+		iter, err = iter.Next()
 		expect.Nil(t, err)
-		expect.NotNil(t, entry3)
-		expect.Equal(t, "hello_world.cpp", entry3.Name)
-		expect.Equal(t, 5, entry3.Line)
-		expect.False(t, entry3.EndSequence)
+		expect.NotNil(t, iter)
+		expect.Equal(t, "hello_world.cpp", iter.Name)
+		expect.Equal(t, 5, iter.Line)
+		expect.False(t, iter.EndSequence)
 
-		entry4, err = iter.Next()
+		iter, err = iter.Next()
 		expect.Nil(t, err)
-		expect.NotNil(t, entry4)
-		expect.Equal(t, "hello_world.cpp", entry4.Name)
-		expect.Equal(t, 5, entry4.Line)
-		expect.True(t, entry4.EndSequence)
+		expect.NotNil(t, iter)
+		expect.Equal(t, "hello_world.cpp", iter.Name)
+		expect.Equal(t, 5, iter.Line)
+		expect.True(t, iter.EndSequence)
 
-		entry5, err = iter.Next()
+		iter, err = iter.Next()
 		expect.Nil(t, err)
-		expect.Nil(t, entry5)
+		expect.Nil(t, iter)
 	}
 }

@@ -208,7 +208,7 @@ func (unit *CompileUnit) Visit(enter ProcessFunc, exit ProcessFunc) error {
 	return root.Visit(enter, exit)
 }
 
-func (unit *CompileUnit) LineIterator() (*LineTableIterator, error) {
+func (unit *CompileUnit) LineIterator() (*LineEntry, error) {
 	err := unit.maybeParseDebugInfoEntries()
 	if err != nil {
 		return nil, err
@@ -218,7 +218,7 @@ func (unit *CompileUnit) LineIterator() (*LineTableIterator, error) {
 		return nil, fmt.Errorf("compile unit has no line table")
 	}
 
-	return unit.lineTable.Iterator(), nil
+	return unit.lineTable.Iterator()
 }
 
 func (unit *CompileUnit) GetLineEntryByAddress(
@@ -227,12 +227,7 @@ func (unit *CompileUnit) GetLineEntryByAddress(
 	*LineEntry,
 	error,
 ) {
-	iter, err := unit.LineIterator()
-	if err != nil {
-		return nil, err
-	}
-
-	prev, err := iter.Next()
+	prev, err := unit.LineIterator()
 	if err != nil {
 		return nil, err
 	}
@@ -241,7 +236,7 @@ func (unit *CompileUnit) GetLineEntryByAddress(
 	}
 
 	for {
-		curr, err := iter.Next()
+		curr, err := prev.Next()
 		if err != nil {
 			return nil, err
 		}
@@ -268,36 +263,32 @@ func (unit *CompileUnit) GetLineEntriesByLine(
 	[]*LineEntry,
 	error,
 ) {
-	iter, err := unit.LineIterator()
-	if err != nil {
-		return nil, err
-	}
-
 	pathName = path.Clean(pathName)
 	result := []*LineEntry{}
+
+	iter, err := unit.LineIterator()
 	for {
-		entry, err := iter.Next()
 		if err != nil {
 			return nil, err
 		}
-		if entry == nil {
+		if iter == nil {
 			return result, nil
 		}
 
-		if entry.Line != line {
-			continue
+		if iter.Line == line {
+			matches := false
+			if path.IsAbs(pathName) {
+				matches = iter.Path() == pathName
+			} else {
+				matches = strings.HasSuffix(iter.Path(), pathName)
+			}
+
+			if matches {
+				result = append(result, iter)
+			}
 		}
 
-		matches := false
-		if path.IsAbs(pathName) {
-			matches = entry.Path() == pathName
-		} else {
-			matches = strings.HasSuffix(entry.Path(), pathName)
-		}
-
-		if matches {
-			result = append(result, entry)
-		}
+		iter, err = iter.Next()
 	}
 }
 
@@ -386,7 +377,7 @@ type InformationSection struct {
 func NewInformationSection(file *elf.File) (*InformationSection, error) {
 	section := file.GetSection(ElfDebugInformationSection)
 	if section == nil {
-		return nil, fmt.Errorf("elf .debug_info section not found")
+		return nil, fmt.Errorf("elf .debug_info %w", ErrSectionNotFound)
 	}
 
 	content, err := section.RawContent()
@@ -487,10 +478,18 @@ func (section *InformationSection) FunctionEntryContainingAddress(
 	*DebugInfoEntry,
 	error,
 ) {
+	unit, err := section.CompileUnitContainingAddress(address)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get function entry: %w", err)
+	}
+	if unit == nil {
+		return nil, nil
+	}
+
 	var result *DebugInfoEntry
 
 	earlyExitErr := fmt.Errorf("early exit")
-	retErr := section.ForEach(
+	retErr := unit.ForEach(
 		func(entry *DebugInfoEntry) error {
 			if entry.Tag != DW_TAG_subprogram {
 				return nil
@@ -518,6 +517,41 @@ func (section *InformationSection) FunctionEntryContainingAddress(
 	}
 
 	return nil, nil
+}
+
+func (section *InformationSection) GetLineEntryByAddress(
+	address elf.FileAddress,
+) (
+	*LineEntry,
+	error,
+) {
+	unit, err := section.CompileUnitContainingAddress(address)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get line entry by address: %w", err)
+	}
+	if unit == nil {
+		return nil, nil
+	}
+
+	return unit.GetLineEntryByAddress(address)
+}
+
+func (section *InformationSection) GetLineEntriesByLine(
+	pathName string,
+	line int64,
+) (
+	[]*LineEntry,
+	error,
+) {
+	result := []*LineEntry{}
+	for _, unit := range section.CompileUnits {
+		entries, err := unit.GetLineEntriesByLine(pathName, line)
+		if err != nil {
+			return nil, err
+		}
+		result = append(result, entries...)
+	}
+	return result, nil
 }
 
 func (section *InformationSection) FunctionEntriesWithName(

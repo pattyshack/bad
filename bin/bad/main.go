@@ -10,7 +10,8 @@ import (
 
 	"github.com/chzyer/readline"
 
-	"github.com/pattyshack/bad"
+	"github.com/pattyshack/bad/debugger"
+	. "github.com/pattyshack/bad/debugger/common"
 )
 
 type command interface {
@@ -48,14 +49,14 @@ func (cmds subCommands) printAvailableCommands() {
 	}
 }
 
-type cmdFunc func(*bad.Debugger, []string) error
+type cmdFunc func(*debugger.Debugger, []string) error
 
 type funcCmd struct {
-	debugger *bad.Debugger
+	debugger *debugger.Debugger
 	cmdFunc
 }
 
-func newFuncCmd(debugger *bad.Debugger, f cmdFunc) funcCmd {
+func newFuncCmd(debugger *debugger.Debugger, f cmdFunc) funcCmd {
 	return funcCmd{
 		debugger: debugger,
 		cmdFunc:  f,
@@ -72,7 +73,7 @@ func (f runCmd) run(args []string) error {
 	return f(args)
 }
 
-func initializeCommands(debugger *bad.Debugger) command {
+func initializeCommands(debugger *debugger.Debugger) command {
 	registerCmds := subCommands{
 		{
 			name: "read",
@@ -90,15 +91,13 @@ func initializeCommands(debugger *bad.Debugger) command {
 	}
 
 	breakPointCmds := stopPointCommands{
-		debugger:      debugger,
-		stopPoints:    debugger.BreakPointSites,
-		isBreakPoints: true,
+		debugger:   debugger,
+		stopPoints: debugger.BreakPoints,
 	}
 
 	watchPointCmds := stopPointCommands{
-		debugger:      debugger,
-		stopPoints:    debugger.WatchPoints,
-		isBreakPoints: false,
+		debugger:   debugger,
+		stopPoints: debugger.WatchPoints,
 	}
 
 	memoryCmds := subCommands{
@@ -138,8 +137,23 @@ func initializeCommands(debugger *bad.Debugger) command {
 			command:     newFuncCmd(debugger, resume),
 		},
 		{
+			name:        "next",
+			description: "       - step over",
+			command:     newFuncCmd(debugger, stepOver),
+		},
+		{
+			name:        "finish",
+			description: "     - step out",
+			command:     newFuncCmd(debugger, stepOut),
+		},
+		{
 			name:        "step",
-			description: "       - step over a single instruction",
+			description: "       - step in",
+			command:     newFuncCmd(debugger, stepIn),
+		},
+		{
+			name:        "single",
+			description: "     - single instruction step",
 			command:     newFuncCmd(debugger, stepInstruction),
 		},
 		{
@@ -174,64 +188,133 @@ func initializeCommands(debugger *bad.Debugger) command {
 			description: " - commands for operating on catch points",
 			command:     catchPointCmds,
 		},
+		{
+			name:        "print",
+			description: "      - print current status",
+			command:     newFuncCmd(debugger, printStatus),
+		},
 	}
 }
 
 type noOpCmd struct{}
 
-func (noOpCmd) run(db *bad.Debugger, args []string) error {
+func (noOpCmd) run(db *debugger.Debugger, args []string) error {
 	return nil
 }
 
-func printProcessState(db *bad.Debugger, state bad.ProcessState) {
-	fmt.Println(state)
-	if state.Stopped() {
-		instructions, err := db.Disassemble(state.NextInstructionAddress, 5)
+func printProcessStatus(db *debugger.Debugger, status *debugger.ProcessStatus) {
+	fmt.Println(status)
+	if !status.Stopped {
+		return
+	}
+
+	if status.FileEntry != nil {
+		snippet, err := db.SourceFiles.GetSnippet(
+			status.FileEntry.Path(),
+			int(status.Line),
+			5)
 		if err != nil {
-			fmt.Printf(
-				"failed to disassemble instructions at %x: %s\n",
-				state.NextInstructionAddress,
-				err)
+			fmt.Printf("failed to read source snippet: %s\n", err)
+		} else {
+			fmt.Println()
+			fmt.Println(snippet)
 			return
 		}
+	}
 
-		for _, inst := range instructions {
-			fmt.Println(inst)
-		}
+	instructions, err := db.Disassemble(status.NextInstructionAddress, 5)
+	if err != nil {
+		fmt.Printf(
+			"failed to disassemble instructions at %x: %s\n",
+			status.NextInstructionAddress,
+			err)
+		return
+	}
+
+	fmt.Println()
+	for _, inst := range instructions {
+		fmt.Println(inst)
 	}
 }
 
-func resume(db *bad.Debugger, args []string) error {
-	state, err := db.ResumeUntilSignal()
+func printStatus(db *debugger.Debugger, args []string) error {
+	printProcessStatus(db, db.Status())
+	return nil
+}
+
+func resume(db *debugger.Debugger, args []string) error {
+	status, err := db.ResumeUntilSignal()
 	if err != nil {
-		if errors.Is(err, bad.ErrProcessExited) {
+		if errors.Is(err, ErrProcessExited) {
 			fmt.Println("cannot resume. process", db.Pid, "exited")
 			return nil
 		}
 		return err
 	}
 
-	printProcessState(db, state)
+	printProcessStatus(db, status)
 	return nil
 }
 
-func stepInstruction(db *bad.Debugger, args []string) error {
-	state, err := db.StepInstruction()
+func stepOut(db *debugger.Debugger, args []string) error {
+	status, err := db.StepOut()
 	if err != nil {
-		if errors.Is(err, bad.ErrProcessExited) {
+		if errors.Is(err, ErrProcessExited) {
+			fmt.Println("cannot resume. process", db.Pid, "exited")
+			return nil
+		}
+		return err
+	}
+
+	printProcessStatus(db, status)
+	return nil
+}
+
+func stepOver(db *debugger.Debugger, args []string) error {
+	status, err := db.StepOver()
+	if err != nil {
+		if errors.Is(err, ErrProcessExited) {
+			fmt.Println("cannot resume. process", db.Pid, "exited")
+			return nil
+		}
+		return err
+	}
+
+	printProcessStatus(db, status)
+	return nil
+}
+
+func stepIn(db *debugger.Debugger, args []string) error {
+	status, err := db.StepIn()
+	if err != nil {
+		if errors.Is(err, ErrProcessExited) {
+			fmt.Println("cannot resume. process", db.Pid, "exited")
+			return nil
+		}
+		return err
+	}
+
+	printProcessStatus(db, status)
+	return nil
+}
+
+func stepInstruction(db *debugger.Debugger, args []string) error {
+	status, err := db.StepInstruction()
+	if err != nil {
+		if errors.Is(err, ErrProcessExited) {
 			fmt.Println("cannot step instruction. process", db.Pid, "exited")
 			return nil
 		}
 		return err
 	}
 
-	printProcessState(db, state)
+	printProcessStatus(db, status)
 	return nil
 }
 
-func disassemble(db *bad.Debugger, args []string) error {
+func disassemble(db *debugger.Debugger, args []string) error {
 	addrStr := ""
-	addr := db.State().NextInstructionAddress
+	addr := db.Status().NextInstructionAddress
 
 	numInstStr := ""
 	numInst := 5
@@ -244,7 +327,7 @@ func disassemble(db *bad.Debugger, args []string) error {
 					fmt.Printf("Invalid @<addr> argument (%s): %s\n", arg, err)
 					return nil
 				}
-				addr = bad.VirtualAddress(val)
+				addr = VirtualAddress(val)
 			} else {
 				fmt.Println(
 					"Invalid arguments. multiple @<addr> specified.",
@@ -296,18 +379,18 @@ func main() {
 	flag.Parse()
 	args := flag.Args()
 
-	var db *bad.Debugger
+	var db *debugger.Debugger
 	var err error
 	if pid != 0 {
 		if len(args) != 0 {
 			panic("unexpected arguments")
 		}
 
-		db, err = bad.AttachTo(pid)
+		db, err = debugger.AttachTo(pid)
 	} else if len(args) == 0 {
 		panic("no arguments given")
 	} else {
-		db, err = bad.StartCmdAndAttachTo(args[0], args[1:]...)
+		db, err = debugger.StartCmdAndAttachTo(args[0], args[1:]...)
 	}
 
 	if err != nil {
@@ -326,7 +409,7 @@ func main() {
 	fmt.Printf(
 		"attached to process %d (load bias: 0x%x)\n",
 		db.Pid,
-		db.LoadedElfFile.LoadBias)
+		db.LoadedElf.Files[0].LoadBias)
 
 	rl, err := readline.New("bad > ")
 	if err != nil {

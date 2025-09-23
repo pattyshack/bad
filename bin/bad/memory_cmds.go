@@ -4,10 +4,11 @@ import (
 	"fmt"
 	"strconv"
 
-	"github.com/pattyshack/bad"
+	"github.com/pattyshack/bad/debugger"
+	. "github.com/pattyshack/bad/debugger/common"
 )
 
-func readMemory(db *bad.Debugger, args []string) error {
+func readMemory(db *debugger.Debugger, args []string) error {
 	if len(args) == 0 {
 		fmt.Println("failed to read from memory. address not specified")
 		return nil
@@ -35,7 +36,7 @@ func readMemory(db *bad.Debugger, args []string) error {
 	}
 
 	out := make([]byte, size)
-	numRead, err := db.ReadFromVirtualMemory(bad.VirtualAddress(addr), out)
+	numRead, err := db.VirtualMemory.Read(VirtualAddress(addr), out)
 	if err != nil {
 		fmt.Println("failed to read from memory:", err)
 		return nil
@@ -68,7 +69,7 @@ func readMemory(db *bad.Debugger, args []string) error {
 	return nil
 }
 
-func writeMemory(db *bad.Debugger, args []string) error {
+func writeMemory(db *debugger.Debugger, args []string) error {
 	if len(args) == 0 {
 		fmt.Println("failed to write to memory. address not specified.")
 		return nil
@@ -99,7 +100,7 @@ func writeMemory(db *bad.Debugger, args []string) error {
 		return nil
 	}
 
-	numWritten, err := db.WriteToVirtualMemory(bad.VirtualAddress(addr), data)
+	numWritten, err := db.VirtualMemory.Write(VirtualAddress(addr), data)
 	if err != nil {
 		fmt.Println("failed to write to memory:", err)
 		return nil

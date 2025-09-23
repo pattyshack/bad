@@ -83,8 +83,8 @@ func (entry FileEntry) Path() string {
 }
 
 type LineTable struct {
-	byteOrder   binary.ByteOrder
-	compileUnit *CompileUnit
+	byteOrder binary.ByteOrder
+	*CompileUnit
 
 	SectionOffset
 
@@ -319,10 +319,10 @@ func (table *LineTable) setCompileUnit(
 	unit *CompileUnit,
 	compilationDir string,
 ) error {
-	if table.compileUnit != nil {
+	if table.CompileUnit != nil {
 		return fmt.Errorf("line table's compile unit already set")
 	}
-	table.compileUnit = unit
+	table.CompileUnit = unit
 
 	for idx, dir := range table.IncludedDirectories {
 		if idx == 0 {
@@ -335,11 +335,11 @@ func (table *LineTable) setCompileUnit(
 	return nil
 }
 
-func (table *LineTable) Iterator() *LineTableIterator {
-	return NewLineTableIterator(table)
+func (table *LineTable) Iterator() (*LineEntry, error) {
+	return newLineIterator(table, NewCursor(table.byteOrder, table.Content))
 }
 
-type LineRegisters struct {
+type LineEntry struct {
 	elf.FileAddress
 	FileIndex       uint64 // 1-based instead of 0-based
 	Line            int64
@@ -351,288 +351,269 @@ type LineRegisters struct {
 	EpilogueBegin   bool
 	ISA             uint64 // X64 does not care about this register
 	Discriminator   uint64
-}
 
-func newLineRegisters(isStatement bool) LineRegisters {
-	state := LineRegisters{}
-	state.initialize(isStatement)
-	return state
-}
-
-func (state *LineRegisters) initialize(isStatement bool) {
-	state.FileAddress = 0
-	state.FileIndex = 1
-	state.Line = 1
-	state.Column = 0
-	state.IsStatement = isStatement
-	state.BasicBlockStart = false
-	state.EndSequence = false
-	state.PrologueEnd = false
-	state.EpilogueBegin = false
-	state.ISA = 0
-	state.Discriminator = 0
-}
-
-func (state *LineRegisters) resetFlags() {
-	state.BasicBlockStart = false
-	state.PrologueEnd = false
-	state.EpilogueBegin = false
-	state.Discriminator = 0
-}
-
-type LineEntry struct {
-	LineRegisters
 	*FileEntry
 
-	reinitialize bool
-	resetFlags   bool
-	cursor       *Cursor
-}
+	reinitialize     bool
+	shouldResetFlags bool
 
-func (entry *LineEntry) Resume() *LineTableIterator {
-	state := entry.LineRegisters
-	if entry.reinitialize {
-		state.initialize(entry.LineTable.DefaultIsStatement)
-	} else if entry.resetFlags {
-		state.resetFlags()
-	}
-
-	return &LineTableIterator{
-		table:      entry.LineTable,
-		state:      state,
-		operations: entry.cursor.Clone(),
-	}
-}
-
-func (entry LineEntry) String() string {
-	return fmt.Sprintf("%s:%d:%d", entry.Path(), entry.Line, entry.Column)
-}
-
-type LineTableIterator struct {
-	table *LineTable
-
-	state LineRegisters
-
+	table      *LineTable
 	operations *Cursor
 }
 
-func NewLineTableIterator(table *LineTable) *LineTableIterator {
-	return &LineTableIterator{
-		table:      table,
-		state:      newLineRegisters(table.DefaultIsStatement),
-		operations: NewCursor(table.byteOrder, table.Content),
+func (entry *LineEntry) CompileUnit() *CompileUnit {
+	return entry.table.CompileUnit
+}
+
+func (entry *LineEntry) String() string {
+	return fmt.Sprintf("%s:%d:%d", entry.Path(), entry.Line, entry.Column)
+}
+
+func newLineIterator(table *LineTable, cursor *Cursor) (*LineEntry, error) {
+	entry := &LineEntry{
+		table:        table,
+		operations:   cursor,
+		reinitialize: true,
 	}
+	return entry.advance()
+}
+
+func (entry *LineEntry) clone() *LineEntry {
+	cloned := *entry
+	cloned.operations = entry.operations.Clone()
+	return &cloned
+}
+
+func (entry *LineEntry) initialize() {
+	entry.FileAddress = 0
+	entry.FileIndex = 1
+	entry.Line = 1
+	entry.Column = 0
+	entry.IsStatement = entry.table.DefaultIsStatement
+	entry.BasicBlockStart = false
+	entry.EndSequence = false
+	entry.PrologueEnd = false
+	entry.EpilogueBegin = false
+	entry.ISA = 0
+	entry.Discriminator = 0
+
+	entry.reinitialize = false
+	entry.shouldResetFlags = false
+}
+
+func (entry *LineEntry) resetFlags() {
+	entry.BasicBlockStart = false
+	entry.PrologueEnd = false
+	entry.EpilogueBegin = false
+	entry.Discriminator = 0
+
+	entry.reinitialize = false
+	entry.shouldResetFlags = false
+}
+
+func (entry *LineEntry) Next() (*LineEntry, error) {
+	nextEntry := entry.clone()
+	return nextEntry.advance()
 }
 
 // NOTE: error is only returned for unexpected error.  (nil, nil) indicates end.
-func (iter *LineTableIterator) Next() (*LineEntry, error) {
-	for !iter.operations.HasReachedEnd() {
-		emitted, err := iter.execute()
+func (entry *LineEntry) advance() (*LineEntry, error) {
+	if entry.reinitialize {
+		entry.initialize()
+	} else if entry.shouldResetFlags {
+		entry.resetFlags()
+	}
+
+	for !entry.operations.HasReachedEnd() {
+		shouldEmitted, err := entry.execute()
 		if err != nil {
 			return nil, err
 		}
 
-		if emitted != nil {
-			idx := emitted.FileIndex - 1
-			if idx >= uint64(len(iter.table.FileEntries)) {
+		if shouldEmitted {
+			idx := entry.FileIndex - 1
+			if idx >= uint64(len(entry.table.FileEntries)) {
 				return nil, fmt.Errorf("out of bound line entry file index")
 			}
 
-			emitted.FileEntry = iter.table.FileEntries[idx]
-			emitted.cursor = iter.operations.Clone()
-			return emitted, nil
+			entry.FileEntry = entry.table.FileEntries[idx]
+			return entry, nil
 		}
 	}
 
 	return nil, nil
 }
 
-func (iter *LineTableIterator) execute() (*LineEntry, error) {
-	opCode, err := iter.operations.U8()
+func (entry *LineEntry) execute() (bool, error) {
+	opCode, err := entry.operations.U8()
 	if err != nil {
-		return nil, fmt.Errorf("failed to decode op code: %w", err)
+		return false, fmt.Errorf("failed to decode op code: %w", err)
 	}
 
-	if opCode >= iter.table.OpCodeBase {
-		return iter.executeSpecialOp(opCode - iter.table.OpCodeBase), nil
+	if opCode >= entry.table.OpCodeBase {
+		entry.executeSpecialOp(opCode - entry.table.OpCodeBase)
+		return true, nil
 	}
 
 	switch opCode {
 	case 0:
-		return iter.executeExtendedOp()
+		return entry.executeExtendedOp()
 
 	case DW_LNS_copy:
-		return iter.copyThenResetFlags(), nil
+		entry.shouldResetFlags = true
+		return true, nil
 
 	case DW_LNS_advance_pc:
-		addressDelta, err := iter.operations.ULEB128(64)
+		addressDelta, err := entry.operations.ULEB128(64)
 		if err != nil {
-			return nil, fmt.Errorf(
+			return false, fmt.Errorf(
 				"failed to decode DW_LNS_advance_pc operand: %w",
 				err)
 		}
 
-		iter.state.FileAddress += elf.FileAddress(addressDelta)
+		entry.FileAddress += elf.FileAddress(addressDelta)
 
 	case DW_LNS_advance_line:
-		lineDelta, err := iter.operations.SLEB128(64)
+		lineDelta, err := entry.operations.SLEB128(64)
 		if err != nil {
-			return nil, fmt.Errorf(
+			return false, fmt.Errorf(
 				"failed to decode DW_LNS_advance_line operand: %w",
 				err)
 		}
 
-		iter.state.Line += lineDelta
+		entry.Line += lineDelta
 
 	case DW_LNS_set_file:
-		index, err := iter.operations.ULEB128(64)
+		index, err := entry.operations.ULEB128(64)
 		if err != nil {
-			return nil, fmt.Errorf(
+			return false, fmt.Errorf(
 				"failed to decode DW_LNS_set_file operand: %w",
 				err)
 		}
 
-		iter.state.FileIndex = index
+		entry.FileIndex = index
 
 	case DW_LNS_set_column:
-		column, err := iter.operations.ULEB128(64)
+		column, err := entry.operations.ULEB128(64)
 		if err != nil {
-			return nil, fmt.Errorf(
+			return false, fmt.Errorf(
 				"failed to decode DW_LNS_set_column operand: %w",
 				err)
 		}
 
-		iter.state.Column = column
+		entry.Column = column
 
 	case DW_LNS_negate_stmt:
-		iter.state.IsStatement = !iter.state.IsStatement
+		entry.IsStatement = !entry.IsStatement
 
 	case DW_LNS_set_basic_block:
-		iter.state.BasicBlockStart = true
+		entry.BasicBlockStart = true
 
 	case DW_LNS_const_add_pc:
-		addressDelta := (255 - iter.table.OpCodeBase) / iter.table.LineRange
-		iter.state.FileAddress += elf.FileAddress(addressDelta)
+		addressDelta := (255 - entry.table.OpCodeBase) / entry.table.LineRange
+		entry.FileAddress += elf.FileAddress(addressDelta)
 
 	case DW_LNS_fixed_advance_pc:
-		addressDelta, err := iter.operations.U16()
+		addressDelta, err := entry.operations.U16()
 		if err != nil {
-			return nil, fmt.Errorf(
+			return false, fmt.Errorf(
 				"failed to decode DW_LNS_fixed_advance_pc operand: %w",
 				err)
 		}
 
-		iter.state.FileAddress += elf.FileAddress(addressDelta)
+		entry.FileAddress += elf.FileAddress(addressDelta)
 
 	case DW_LNS_set_prologue_end:
-		iter.state.PrologueEnd = true
+		entry.PrologueEnd = true
 
 	case DW_LNS_set_epilogue_begin:
-		iter.state.EpilogueBegin = true
+		entry.EpilogueBegin = true
 
 	case DW_LNS_set_isa:
-		isa, err := iter.operations.ULEB128(64)
+		isa, err := entry.operations.ULEB128(64)
 		if err != nil {
-			return nil, fmt.Errorf("failed to decode DW_LNS_set_isa operand: %w", err)
+			return false, fmt.Errorf(
+				"failed to decode DW_LNS_set_isa operand: %w",
+				err)
 		}
 
-		iter.state.ISA = isa
+		entry.ISA = isa
 
 	default:
-		return nil, fmt.Errorf("unknown line op code (%d)", opCode)
+		return false, fmt.Errorf("unknown line op code (%d)", opCode)
 	}
 
-	return nil, nil
+	return false, nil
 }
 
-func (iter *LineTableIterator) executeExtendedOp() (
-	*LineEntry,
-	error,
-) {
-	expectedLength, err := iter.operations.ULEB128(64)
+func (entry *LineEntry) executeExtendedOp() (bool, error) {
+	expectedLength, err := entry.operations.ULEB128(64)
 	if err != nil {
-		return nil, fmt.Errorf("failed to decode extended op length: %w", err)
+		return false, fmt.Errorf("failed to decode extended op length: %w", err)
 	}
 
-	start := iter.operations.Position
+	start := entry.operations.Position
 
-	opCode, err := iter.operations.U8()
+	opCode, err := entry.operations.U8()
 	if err != nil {
-		return nil, fmt.Errorf("failed to decode extended op code: %w", err)
+		return false, fmt.Errorf("failed to decode extended op code: %w", err)
 	}
 
-	var emitted *LineEntry
 	switch opCode {
 	case DW_LNE_end_sequence:
-		iter.state.EndSequence = true
-
-		emitted = &LineEntry{
-			LineRegisters: iter.state,
-
-			reinitialize: true,
-		}
-
-		iter.state.initialize(iter.table.DefaultIsStatement)
+		entry.EndSequence = true
+		entry.reinitialize = true
+		return true, nil
 
 	case DW_LNE_set_address:
-		address, err := iter.operations.U64()
+		address, err := entry.operations.U64()
 		if err != nil {
-			return nil, fmt.Errorf(
+			return false, fmt.Errorf(
 				"failed to decode DW_LNE_set_address operand: %w",
 				err)
 		}
 
-		iter.state.FileAddress = elf.FileAddress(address)
+		entry.FileAddress = elf.FileAddress(address)
 
 	case DW_LNE_define_file:
-		_, err := iter.table.parseAndAddFileEntry(iter.operations, false)
+		_, err := entry.table.parseAndAddFileEntry(entry.operations, false)
 		if err != nil {
-			return nil, fmt.Errorf(
+			return false, fmt.Errorf(
 				"DW_LNE_define_file operation failed: %w",
 				err)
 		}
 
 	case DW_LNE_set_discriminator:
-		discriminator, err := iter.operations.ULEB128(64)
+		discriminator, err := entry.operations.ULEB128(64)
 		if err != nil {
-			return nil, fmt.Errorf(
+			return false, fmt.Errorf(
 				"failed to decode DW_LNE_set_discriminator: %w",
 				err)
 		}
 
-		iter.state.Discriminator = discriminator
+		entry.Discriminator = discriminator
 
 	default:
-		return nil, fmt.Errorf("unknown line extended op code (%d)", opCode)
+		return false, fmt.Errorf("unknown line extended op code (%d)", opCode)
 	}
 
-	length := iter.operations.Position - start
+	length := entry.operations.Position - start
 	if length != int(expectedLength) {
-		return nil, fmt.Errorf(
+		return false, fmt.Errorf(
 			"invalid line extended op code encoding. unexpected length (%d != %d)",
 			length,
 			expectedLength)
 	}
 
-	return emitted, nil
+	return false, nil
 }
 
-func (iter *LineTableIterator) copyThenResetFlags() *LineEntry {
-	emitted := LineEntry{
-		LineRegisters: iter.state,
-		resetFlags:    true,
-	}
+func (entry *LineEntry) executeSpecialOp(index uint8) {
+	addressDelta := index / entry.table.LineRange
+	entry.FileAddress += elf.FileAddress(addressDelta)
 
-	iter.state.resetFlags()
-	return &emitted
-}
+	lineDelta := int64(entry.table.LineBase) + int64(index%entry.table.LineRange)
+	entry.Line += lineDelta
 
-func (iter *LineTableIterator) executeSpecialOp(index uint8) *LineEntry {
-	addressDelta := index / iter.table.LineRange
-	iter.state.FileAddress += elf.FileAddress(addressDelta)
-
-	lineDelta := int64(iter.table.LineBase) + int64(index%iter.table.LineRange)
-	iter.state.Line += lineDelta
-
-	return iter.copyThenResetFlags()
+	entry.shouldResetFlags = true
 }

@@ -7,7 +7,9 @@ anti_debugger
 hello_world
 memory
 multi_cu
+overloaded
 print_longdouble
 reg_read
 reg_write
 run_endlessly
+step

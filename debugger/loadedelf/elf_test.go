@@ -1,4 +1,4 @@
-package bad
+package loadedelf
 
 import (
 	"os"
@@ -20,6 +20,7 @@ func TestElf(t *testing.T) {
 
 func (ElfSuite) TestStringTable(t *testing.T) {
 	table := elf.NewStringTableSection(
+		nil,
 		elf.SectionHeaderEntry{},
 		[]byte("\x00Milkshake\x00shake\x00no\x00"))
 
@@ -34,7 +35,7 @@ func (ElfSuite) TestStringTable(t *testing.T) {
 }
 
 func (ElfSuite) TestParse(t *testing.T) {
-	content, err := os.ReadFile("test_targets/hello_world")
+	content, err := os.ReadFile("../test_targets/hello_world")
 	expect.Nil(t, err)
 
 	file, err := elf.ParseBytes(content)

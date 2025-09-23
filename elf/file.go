@@ -48,7 +48,7 @@ type parser struct {
 
 	binary.ByteOrder
 
-	File
+	*File
 }
 
 func Parse(reader io.Reader) (*File, error) {
@@ -63,6 +63,7 @@ func Parse(reader io.Reader) (*File, error) {
 func ParseBytes(content []byte) (*File, error) {
 	p := parser{
 		content: content,
+		File:    &File{},
 	}
 
 	err := p.parse()
@@ -70,7 +71,7 @@ func ParseBytes(content []byte) (*File, error) {
 		return nil, err
 	}
 
-	return &p.File, nil
+	return p.File, nil
 }
 
 func (p *parser) parse() error {
@@ -256,7 +257,7 @@ func (p *parser) parseSectionHeaders() error {
 		case SectionTypeStringTable:
 			p.Sections = append(
 				p.Sections,
-				NewStringTableSection(header, sectionContent))
+				NewStringTableSection(p.File, header, sectionContent))
 		case SectionTypeSymbolTable,
 			SectionTypeDynamicSymbolTable:
 
@@ -272,7 +273,9 @@ func (p *parser) parseSectionHeaders() error {
 			}
 			p.Sections = append(p.Sections, note)
 		default:
-			p.Sections = append(p.Sections, newRawSection(header, sectionContent))
+			p.Sections = append(
+				p.Sections,
+				newRawSection(p.File, header, sectionContent))
 		}
 	}
 
@@ -397,7 +400,7 @@ func (p *parser) parseSymbolTable(
 	}
 
 	table := &SymbolTableSection{
-		BaseSection: newBaseSection(header),
+		BaseSection: newBaseSection(p.File, header),
 	}
 
 	symbols := make([]*Symbol, 0, numEntries)
@@ -505,5 +508,5 @@ func (p *parser) parseNote(
 		content = content[nextEntryStart:]
 	}
 
-	return newNoteSection(header, entries), nil
+	return newNoteSection(p.File, header, entries), nil
 }

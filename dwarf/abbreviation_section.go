@@ -31,7 +31,7 @@ type AbbreviationSection struct {
 func NewAbbreviationSection(file *elf.File) (*AbbreviationSection, error) {
 	section := file.GetSection(ElfDebugAbbreviationSection)
 	if section == nil {
-		return nil, fmt.Errorf("elf .debug_abbrev section not found")
+		return nil, fmt.Errorf("elf .debug_abbrev %w", ErrSectionNotFound)
 	}
 
 	content, err := section.RawContent()

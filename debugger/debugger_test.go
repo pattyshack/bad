@@ -1,4 +1,4 @@
-package bad
+package debugger
 
 import (
 	"encoding/binary"
@@ -13,7 +13,10 @@ import (
 	"github.com/pattyshack/gt/testing/expect"
 	"github.com/pattyshack/gt/testing/suite"
 
-	"github.com/pattyshack/bad/elf"
+	"github.com/pattyshack/bad/debugger/catchpoint"
+	. "github.com/pattyshack/bad/debugger/common"
+	"github.com/pattyshack/bad/debugger/registers"
+	"github.com/pattyshack/bad/debugger/stoppoint"
 	"github.com/pattyshack/bad/procfs"
 )
 
@@ -82,7 +85,7 @@ func (DebuggerSuite) TestResumeFromAttach(t *testing.T) {
 	expect.Nil(t, err)
 	expect.Equal(t, procfs.TracingStop, status.State)
 
-	err = db.resume()
+	err = db.tracer.Resume(0)
 	expect.Nil(t, err)
 
 	status, err = procfs.GetProcessStatus(cmd.Process.Pid)
@@ -101,7 +104,7 @@ func (DebuggerSuite) TestResumeFromStart(t *testing.T) {
 	expect.Nil(t, err)
 	expect.Equal(t, procfs.TracingStop, status.State)
 
-	err = db.resume()
+	err = db.tracer.Resume(0)
 	expect.Nil(t, err)
 
 	status, err = procfs.GetProcessStatus(db.Pid)
@@ -116,14 +119,11 @@ func (DebuggerSuite) TestResumeAlreadyTerminated(t *testing.T) {
 	expect.Nil(t, err)
 	defer db.Close()
 
-	err = db.resume()
+	status, err := db.ResumeUntilSignal()
 	expect.Nil(t, err)
+	expect.True(t, status.Exited)
 
-	status, err := db.waitForSignal()
-	expect.Nil(t, err)
-	expect.True(t, status.Exited())
-
-	err = db.resume()
+	_, err = db.ResumeUntilSignal()
 	expect.Error(t, err, "process exited")
 }
 
@@ -144,33 +144,27 @@ func (DebuggerSuite) TestSetRegisterState(t *testing.T) {
 	err = writer.Close()
 	expect.Nil(t, err)
 
-	err = db.resume()
+	status, err := db.ResumeUntilSignal()
 	expect.Nil(t, err)
-
-	status, err := db.waitForSignal()
-	expect.Nil(t, err)
-	expect.True(t, status.Stopped())
+	expect.True(t, status.Stopped)
 
 	// check rsi
 
-	rsi, ok := db.RegisterByName("rsi")
+	rsi, ok := registers.ByName("rsi")
 	expect.True(t, ok)
 
-	regState, err := db.GetRegisterState()
+	regState, err := db.Registers.GetState()
 	expect.Nil(t, err)
 
-	regState, err = regState.WithValue(rsi, Uint64Value(0xcafecafe))
+	regState, err = regState.WithValue(rsi, registers.U64(0xcafecafe))
 	expect.Nil(t, err)
 
-	err = db.SetRegisterState(regState)
+	err = db.Registers.SetState(regState)
 	expect.Nil(t, err)
 
-	err = db.resume()
+	status, err = db.ResumeUntilSignal()
 	expect.Nil(t, err)
-
-	status, err = db.waitForSignal()
-	expect.Nil(t, err)
-	expect.True(t, status.Stopped())
+	expect.True(t, status.Stopped)
 
 	content := make([]byte, 1024)
 	n, err := reader.Read(content)
@@ -179,24 +173,21 @@ func (DebuggerSuite) TestSetRegisterState(t *testing.T) {
 
 	// check mm0
 
-	mm0, ok := db.RegisterByName("mm0")
+	mm0, ok := registers.ByName("mm0")
 	expect.True(t, ok)
 
-	regState, err = db.GetRegisterState()
+	regState, err = db.Registers.GetState()
 	expect.Nil(t, err)
 
-	regState, err = regState.WithValue(mm0, Uint128Value(0, 0xba5eba11))
+	regState, err = regState.WithValue(mm0, registers.U128(0, 0xba5eba11))
 	expect.Nil(t, err)
 
-	err = db.SetRegisterState(regState)
+	err = db.Registers.SetState(regState)
 	expect.Nil(t, err)
 
-	err = db.resume()
+	status, err = db.ResumeUntilSignal()
 	expect.Nil(t, err)
-
-	status, err = db.waitForSignal()
-	expect.Nil(t, err)
-	expect.True(t, status.Stopped())
+	expect.True(t, status.Stopped)
 
 	n, err = reader.Read(content)
 	expect.Nil(t, err)
@@ -204,24 +195,21 @@ func (DebuggerSuite) TestSetRegisterState(t *testing.T) {
 
 	// check xmm0
 
-	xmm0, ok := db.RegisterByName("xmm0")
+	xmm0, ok := registers.ByName("xmm0")
 	expect.True(t, ok)
 
-	regState, err = db.GetRegisterState()
+	regState, err = db.Registers.GetState()
 	expect.Nil(t, err)
 
-	regState, err = regState.WithValue(xmm0, Float64Value(42.24))
+	regState, err = regState.WithValue(xmm0, registers.F64(42.24))
 	expect.Nil(t, err)
 
-	err = db.SetRegisterState(regState)
+	err = db.Registers.SetState(regState)
 	expect.Nil(t, err)
 
-	err = db.resume()
+	status, err = db.ResumeUntilSignal()
 	expect.Nil(t, err)
-
-	status, err = db.waitForSignal()
-	expect.Nil(t, err)
-	expect.True(t, status.Stopped())
+	expect.True(t, status.Stopped)
 
 	n, err = reader.Read(content)
 	expect.Nil(t, err)
@@ -229,7 +217,7 @@ func (DebuggerSuite) TestSetRegisterState(t *testing.T) {
 
 	// check st0
 
-	regState, err = db.GetRegisterState()
+	regState, err = db.Registers.GetState()
 	expect.Nil(t, err)
 
 	// NOTE: long double is not expressible in golang.
@@ -238,19 +226,19 @@ func (DebuggerSuite) TestSetRegisterState(t *testing.T) {
 	longDoubleLow := uint64(0xa8_f5_c2_8f_5c_28_f5_c3)
 	longDoubleHigh := uint64(0x00_00_00_00_00_00_40_04)
 
-	st0, ok := db.RegisterByName("st0")
+	st0, ok := registers.ByName("st0")
 	expect.True(t, ok)
 
 	regState, err = regState.WithValue(
 		st0,
-		Uint128Value(longDoubleHigh, longDoubleLow))
+		registers.U128(longDoubleHigh, longDoubleLow))
 	expect.Nil(t, err)
 
 	// fsw' 11-13 bits track the top of the fpu stack.  Stack starts at index 0
 	// (st7) and goes down instead of up, wrapping around up to 7 (st0)
-	fswBits := Uint16Value(0b_00_11_10_00_00_00_00_00)
+	fswBits := registers.U16(0b_00_11_10_00_00_00_00_00)
 
-	fsw, ok := db.RegisterByName("fsw")
+	fsw, ok := registers.ByName("fsw")
 	expect.True(t, ok)
 
 	regState, err = regState.WithValue(fsw, fswBits)
@@ -259,23 +247,19 @@ func (DebuggerSuite) TestSetRegisterState(t *testing.T) {
 	// ftw tracks which registers are valid, 2 bit per register. 0b11 means
 	// empty, 0b00 means valid.
 	// st0 is valid, all other st registers are empty
-	ftwBits := Uint16Value(0b_00_11_11_11_11_11_11_11)
+	ftwBits := registers.U16(0b_00_11_11_11_11_11_11_11)
 
-	ftw, ok := db.RegisterByName("ftw")
+	ftw, ok := registers.ByName("ftw")
 	expect.True(t, ok)
 
 	regState, err = regState.WithValue(ftw, ftwBits)
 	expect.Nil(t, err)
 
-	err = db.SetRegisterState(regState)
+	err = db.Registers.SetState(regState)
 	expect.Nil(t, err)
 
-	err = db.resume()
-	expect.Nil(t, err)
-
-	status, err = db.waitForSignal()
-	expect.Nil(t, err)
-	expect.True(t, status.Stopped())
+	status, err = db.ResumeUntilSignal()
+	expect.True(t, status.Stopped)
 
 	n, err = reader.Read(content)
 	expect.Nil(t, err)
@@ -289,17 +273,13 @@ func (DebuggerSuite) TestGetRegisterState(t *testing.T) {
 
 	// check r13
 
-	err = db.resume()
+	status, err := db.ResumeUntilSignal()
+	expect.True(t, status.Stopped)
+
+	regState, err := db.Registers.GetState()
 	expect.Nil(t, err)
 
-	status, err := db.waitForSignal()
-	expect.Nil(t, err)
-	expect.True(t, status.Stopped())
-
-	regState, err := db.GetRegisterState()
-	expect.Nil(t, err)
-
-	r13, ok := db.RegisterByName("r13")
+	r13, ok := registers.ByName("r13")
 	expect.True(t, ok)
 
 	val := regState.Value(r13)
@@ -307,17 +287,14 @@ func (DebuggerSuite) TestGetRegisterState(t *testing.T) {
 
 	// check r13b
 
-	err = db.resume()
+	status, err = db.ResumeUntilSignal()
+	expect.Nil(t, err)
+	expect.True(t, status.Stopped)
+
+	regState, err = db.Registers.GetState()
 	expect.Nil(t, err)
 
-	status, err = db.waitForSignal()
-	expect.Nil(t, err)
-	expect.True(t, status.Stopped())
-
-	regState, err = db.GetRegisterState()
-	expect.Nil(t, err)
-
-	r13b, ok := db.RegisterByName("r13b")
+	r13b, ok := registers.ByName("r13b")
 	expect.True(t, ok)
 
 	val = regState.Value(r13b)
@@ -325,63 +302,54 @@ func (DebuggerSuite) TestGetRegisterState(t *testing.T) {
 
 	// check mm0
 
-	err = db.resume()
+	status, err = db.ResumeUntilSignal()
+	expect.Nil(t, err)
+	expect.True(t, status.Stopped)
+
+	regState, err = db.Registers.GetState()
 	expect.Nil(t, err)
 
-	status, err = db.waitForSignal()
-	expect.Nil(t, err)
-	expect.True(t, status.Stopped())
-
-	regState, err = db.GetRegisterState()
-	expect.Nil(t, err)
-
-	mm0, ok := db.RegisterByName("mm0")
+	mm0, ok := registers.ByName("mm0")
 	expect.True(t, ok)
 
 	val = regState.Value(mm0)
-	u128, ok := val.(Uint128)
+	u128, ok := val.(registers.Uint128)
 	expect.True(t, ok)
 	expect.Equal(t, 0xba5eba11, u128.Low)
 	// NOTE: the high bits contains garbage
 
 	// check xmm0
 
-	err = db.resume()
+	status, err = db.ResumeUntilSignal()
+	expect.Nil(t, err)
+	expect.True(t, status.Stopped)
+
+	regState, err = db.Registers.GetState()
 	expect.Nil(t, err)
 
-	status, err = db.waitForSignal()
-	expect.Nil(t, err)
-	expect.True(t, status.Stopped())
-
-	regState, err = db.GetRegisterState()
-	expect.Nil(t, err)
-
-	xmm0, ok := db.RegisterByName("xmm0")
+	xmm0, ok := registers.ByName("xmm0")
 	expect.True(t, ok)
 
 	val = regState.Value(xmm0)
-	u128, ok = val.(Uint128)
+	u128, ok = val.(registers.Uint128)
 	expect.True(t, ok)
 	expect.Equal(t, math.Float64bits(64.125), u128.Low)
 	expect.Equal(t, 0, u128.High)
 
 	// check st0
 
-	err = db.resume()
+	status, err = db.ResumeUntilSignal()
+	expect.Nil(t, err)
+	expect.True(t, status.Stopped)
+
+	regState, err = db.Registers.GetState()
 	expect.Nil(t, err)
 
-	status, err = db.waitForSignal()
-	expect.Nil(t, err)
-	expect.True(t, status.Stopped())
-
-	regState, err = db.GetRegisterState()
-	expect.Nil(t, err)
-
-	st0, ok := db.RegisterByName("st0")
+	st0, ok := registers.ByName("st0")
 	expect.True(t, ok)
 
 	val = regState.Value(st0)
-	u128, ok = val.(Uint128)
+	u128, ok = val.(registers.Uint128)
 	expect.True(t, ok)
 
 	// NOTE: long double is not expressible in golang.
@@ -410,24 +378,27 @@ func (DebuggerSuite) TestSoftwareBreakPointSite(t *testing.T) {
 	err = writer.Close()
 	expect.Nil(t, err)
 
-	loadAddress := db.ToVirtualAddress(elf.FileAddress(db.EntryPointAddress))
+	loadAddress := db.LoadedElf.Files[0].EntryPointVirtualAddress()
 
-	_, err = db.BreakPointSites.Set(loadAddress, SoftwareBreakPointSiteOptions())
+	_, err = db.BreakPoints.Set(
+		db.NewAddressResolver(loadAddress),
+		stoppoint.NewBreakSiteType(false),
+		true)
 	expect.Nil(t, err)
 
 	state, err := db.ResumeUntilSignal()
 	expect.Nil(t, err)
-	expect.True(t, state.Stopped())
-	expect.Equal(t, syscall.SIGTRAP, state.StopSignal())
+	expect.True(t, state.Stopped)
+	expect.Equal(t, syscall.SIGTRAP, state.StopSignal)
 
-	_, pc, err := db.getProgramCounter()
+	_, pc, err := db.Registers.GetProgramCounter()
 	expect.Nil(t, err)
 	expect.Equal(t, loadAddress, pc)
 
 	state, err = db.ResumeUntilSignal()
 	expect.Nil(t, err)
-	expect.True(t, state.Exited())
-	expect.Equal(t, 0, state.ExitStatus())
+	expect.True(t, state.Exited)
+	expect.Equal(t, 0, state.ExitStatus)
 
 	content, err := io.ReadAll(reader)
 	expect.Nil(t, err)
@@ -453,7 +424,7 @@ func (DebuggerSuite) TestHardwareBreakPointEvadesMemoryChecksum(t *testing.T) {
 
 	state, err := db.ResumeUntilSignal()
 	expect.Nil(t, err)
-	expect.True(t, state.Stopped() && state.StopSignal() == syscall.SIGTRAP)
+	expect.True(t, state.Stopped && state.StopSignal == syscall.SIGTRAP)
 
 	buffer := make([]byte, 1024)
 
@@ -463,33 +434,39 @@ func (DebuggerSuite) TestHardwareBreakPointEvadesMemoryChecksum(t *testing.T) {
 
 	addr := VirtualAddress(binary.LittleEndian.Uint64(buffer[:8]))
 
-	_, err = db.BreakPointSites.Set(addr, SoftwareBreakPointSiteOptions())
+	breakPoint, err := db.BreakPoints.Set(
+		db.NewAddressResolver(addr),
+		stoppoint.NewBreakSiteType(false),
+		true)
 	expect.Nil(t, err)
 
 	state, err = db.ResumeUntilSignal()
 	expect.Nil(t, err)
-	expect.True(t, state.Stopped() && state.StopSignal() == syscall.SIGTRAP)
+	expect.True(t, state.Stopped && state.StopSignal == syscall.SIGTRAP)
 
 	n, err = reader.Read(buffer)
 	expect.Nil(t, err)
 	expect.Equal(t, "Putting pepperoni on pizza...\n", string(buffer[:n]))
 
-	err = db.BreakPointSites.Remove(addr)
+	err = db.BreakPoints.Remove(breakPoint.Id())
 	expect.Nil(t, err)
 
-	_, err = db.BreakPointSites.Set(addr, HardwareBreakPointSiteOptions())
+	_, err = db.BreakPoints.Set(
+		db.NewAddressResolver(addr),
+		stoppoint.NewBreakSiteType(true),
+		true)
 	expect.Nil(t, err)
 
 	state, err = db.ResumeUntilSignal()
 	expect.Nil(t, err)
-	expect.True(t, state.Stopped() && state.StopSignal() == syscall.SIGTRAP)
+	expect.True(t, state.Stopped && state.StopSignal == syscall.SIGTRAP)
 
 	// verify we're at break point address
 	expect.Equal(t, state.NextInstructionAddress, addr)
 
 	state, err = db.ResumeUntilSignal()
 	expect.Nil(t, err)
-	expect.True(t, state.Stopped() && state.StopSignal() == syscall.SIGTRAP)
+	expect.True(t, state.Stopped && state.StopSignal == syscall.SIGTRAP)
 
 	n, err = reader.Read(buffer)
 	expect.Nil(t, err)
@@ -515,7 +492,7 @@ func (DebuggerSuite) TestWatchPoint(t *testing.T) {
 
 	state, err := db.ResumeUntilSignal()
 	expect.Nil(t, err)
-	expect.True(t, state.Stopped() && state.StopSignal() == syscall.SIGTRAP)
+	expect.True(t, state.Stopped && state.StopSignal == syscall.SIGTRAP)
 
 	buffer := make([]byte, 1024)
 
@@ -525,29 +502,35 @@ func (DebuggerSuite) TestWatchPoint(t *testing.T) {
 
 	addr := VirtualAddress(binary.LittleEndian.Uint64(buffer[:8]))
 
-	_, err = db.WatchPoints.Set(addr, HardwareWatchPointOptions(ReadWriteMode, 1))
+	_, err = db.WatchPoints.Set(
+		db.NewAddressResolver(addr),
+		stoppoint.NewWatchSiteType(stoppoint.ReadWriteMode, 1),
+		true)
 	expect.Nil(t, err)
 
 	state, err = db.ResumeUntilSignal()
 	expect.Nil(t, err)
-	expect.True(t, state.Stopped() && state.StopSignal() == syscall.SIGTRAP)
+	expect.True(t, state.Stopped && state.StopSignal == syscall.SIGTRAP)
 
 	// NOTE: force anti_debugger to read the original checksum
 	state, err = db.StepInstruction()
 	expect.Nil(t, err)
-	expect.True(t, state.Stopped() && state.StopSignal() == syscall.SIGTRAP)
+	expect.True(t, state.Stopped && state.StopSignal == syscall.SIGTRAP)
 
-	_, err = db.BreakPointSites.Set(addr, SoftwareBreakPointSiteOptions())
+	_, err = db.BreakPoints.Set(
+		db.NewAddressResolver(addr),
+		stoppoint.NewBreakSiteType(false),
+		true)
 	expect.Nil(t, err)
 
 	// Hit the software breakpoint
 	state, err = db.ResumeUntilSignal()
 	expect.Nil(t, err)
-	expect.True(t, state.Stopped() && state.StopSignal() == syscall.SIGTRAP)
+	expect.True(t, state.Stopped && state.StopSignal == syscall.SIGTRAP)
 
 	state, err = db.ResumeUntilSignal()
 	expect.Nil(t, err)
-	expect.True(t, state.Stopped() && state.StopSignal() == syscall.SIGTRAP)
+	expect.True(t, state.Stopped && state.StopSignal == syscall.SIGTRAP)
 
 	n, err = reader.Read(buffer)
 	expect.Nil(t, err)
@@ -575,7 +558,7 @@ func (DebuggerSuite) TestReadWriteMemory(t *testing.T) {
 
 	state, err := db.ResumeUntilSignal()
 	expect.Nil(t, err)
-	expect.True(t, state.Stopped() && state.StopSignal() == syscall.SIGTRAP)
+	expect.True(t, state.Stopped && state.StopSignal == syscall.SIGTRAP)
 
 	buffer := make([]byte, 1024)
 	n, err := reader.Read(buffer)
@@ -585,14 +568,14 @@ func (DebuggerSuite) TestReadWriteMemory(t *testing.T) {
 	addr := VirtualAddress(binary.LittleEndian.Uint64(buffer[:8]))
 
 	content := make([]byte, 8)
-	count, err := db.ReadFromVirtualMemory(addr, content)
+	count, err := db.VirtualMemory.Read(addr, content)
 	expect.Nil(t, err)
 	expect.Equal(t, 8, count)
 	expect.Equal(t, 0xcafecafe, binary.LittleEndian.Uint64(content))
 
 	state, err = db.ResumeUntilSignal()
 	expect.Nil(t, err)
-	expect.True(t, state.Stopped() && state.StopSignal() == syscall.SIGTRAP)
+	expect.True(t, state.Stopped && state.StopSignal == syscall.SIGTRAP)
 
 	n, err = reader.Read(buffer)
 	expect.Nil(t, err)
@@ -601,13 +584,13 @@ func (DebuggerSuite) TestReadWriteMemory(t *testing.T) {
 	addr = VirtualAddress(binary.LittleEndian.Uint64(buffer[:8]))
 
 	content = []byte("hello world!\x00")
-	count, err = db.WriteToVirtualMemory(addr, content)
+	count, err = db.VirtualMemory.Write(addr, content)
 	expect.Nil(t, err)
 	expect.Equal(t, 13, count)
 
 	state, err = db.ResumeUntilSignal()
 	expect.Nil(t, err)
-	expect.True(t, state.Exited() && state.ExitStatus() == 0)
+	expect.True(t, state.Exited && state.ExitStatus == 0)
 
 	n, err = reader.Read(buffer)
 	expect.Nil(t, err)
@@ -619,26 +602,140 @@ func (DebuggerSuite) TestSyscallCatchpoint(t *testing.T) {
 	expect.Nil(t, err)
 	defer db.Close()
 
-	writeSyscall, ok := GetSyscallIdByName("write")
+	writeSyscall, ok := catchpoint.SyscallIdByName("write")
 	expect.True(t, ok)
 
-	db.SyscallCatchPolicy.CatchList([]SyscallId{writeSyscall})
+	db.SyscallCatchPolicy.CatchList([]catchpoint.SyscallId{writeSyscall})
 
 	state, err := db.ResumeUntilSignal()
 	expect.Nil(t, err)
-	expect.True(t, state.Stopped())
-	expect.Equal(t, syscall.SIGTRAP, state.StopSignal())
-	expect.Equal(t, SyscallTrap, state.TrapReason)
+	expect.True(t, state.Stopped)
+	expect.Equal(t, syscall.SIGTRAP, state.StopSignal)
+	expect.Equal(t, SyscallTrap, state.TrapKind)
 	expect.NotNil(t, state.SyscallTrapInfo)
 	expect.Equal(t, writeSyscall, state.SyscallTrapInfo.Id)
 	expect.True(t, state.SyscallTrapInfo.IsEntry)
 
 	state, err = db.ResumeUntilSignal()
 	expect.Nil(t, err)
-	expect.True(t, state.Stopped())
-	expect.Equal(t, syscall.SIGTRAP, state.StopSignal())
-	expect.Equal(t, SyscallTrap, state.TrapReason)
+	expect.True(t, state.Stopped)
+	expect.Equal(t, syscall.SIGTRAP, state.StopSignal)
+	expect.Equal(t, SyscallTrap, state.TrapKind)
 	expect.NotNil(t, state.SyscallTrapInfo)
 	expect.Equal(t, writeSyscall, state.SyscallTrapInfo.Id)
 	expect.False(t, state.SyscallTrapInfo.IsEntry)
+}
+
+func TestSourceLevelBreakPoints(t *testing.T) {
+	cmd := exec.Command("test_targets/overloaded")
+	db, err := StartAndAttachTo(cmd)
+	expect.Nil(t, err)
+	defer db.Close()
+
+	_, err = db.BreakPoints.Set(
+		db.NewLineResolver("overloaded.cpp", 17),
+		stoppoint.NewBreakSiteType(false),
+		true)
+
+	status, err := db.ResumeUntilSignal()
+	expect.Nil(t, err)
+	expect.True(t, status.Stopped)
+	expect.Equal(t, syscall.SIGTRAP, status.StopSignal)
+	expect.Equal(t, SoftwareTrap, status.TrapKind)
+	expect.Equal(t, "overloaded.cpp", status.FileEntry.Name)
+	expect.Equal(t, 17, status.Line)
+
+	point, err := db.BreakPoints.Set(
+		db.NewFunctionResolver("print_type"),
+		stoppoint.NewBreakSiteType(false),
+		true)
+
+	sites := point.Sites()
+	expect.Equal(t, 3, len(sites))
+
+	err = sites[0].Disable()
+	expect.Nil(t, err)
+
+	status, err = db.ResumeUntilSignal()
+	expect.Nil(t, err)
+	expect.True(t, status.Stopped)
+	expect.Equal(t, syscall.SIGTRAP, status.StopSignal)
+	expect.Equal(t, SoftwareTrap, status.TrapKind)
+	expect.Equal(t, "overloaded.cpp", status.FileEntry.Name)
+	expect.Equal(t, 9, status.Line)
+
+	status, err = db.ResumeUntilSignal()
+	expect.Nil(t, err)
+	expect.True(t, status.Stopped)
+	expect.Equal(t, syscall.SIGTRAP, status.StopSignal)
+	expect.Equal(t, SoftwareTrap, status.TrapKind)
+	expect.Equal(t, "overloaded.cpp", status.FileEntry.Name)
+	expect.Equal(t, 13, status.Line)
+
+	status, err = db.ResumeUntilSignal()
+	expect.Nil(t, err)
+	expect.True(t, status.Exited)
+}
+
+func TestSourceLevelStepping(t *testing.T) {
+	cmd := exec.Command("test_targets/step")
+	db, err := StartAndAttachTo(cmd)
+	expect.Nil(t, err)
+	defer db.Close()
+
+	_, err = db.BreakPoints.Set(
+		db.NewFunctionResolver("main"),
+		stoppoint.NewBreakSiteType(false),
+		true)
+
+	status, err := db.ResumeUntilSignal()
+	expect.Nil(t, err)
+	expect.True(t, status.Stopped)
+	expect.Equal(t, syscall.SIGTRAP, status.StopSignal)
+	expect.Equal(t, SoftwareTrap, status.TrapKind)
+	expect.Equal(t, "main", status.FunctionName)
+
+	oldPC := status.NextInstructionAddress
+
+	status, err = db.StepOver()
+	expect.Nil(t, err)
+	expect.True(t, status.Stopped)
+	expect.Equal(t, syscall.SIGTRAP, status.StopSignal)
+	expect.Equal(t, SingleStepTrap, status.TrapKind)
+	expect.Equal(t, "main", status.FunctionName)
+	expect.NotEqual(t, oldPC, status.NextInstructionAddress)
+
+	status, err = db.StepIn()
+	expect.Nil(t, err)
+	expect.True(t, status.Stopped)
+	expect.Equal(t, syscall.SIGTRAP, status.StopSignal)
+	expect.Equal(t, SingleStepTrap, status.TrapKind)
+	expect.Equal(t, "find_happiness", status.FunctionName)
+	expect.Equal(t, 2, db.callStack.NumUnexecutedInlinedFunctions())
+
+	oldPC = status.NextInstructionAddress
+
+	status, err = db.StepIn()
+	expect.Nil(t, err)
+	expect.True(t, status.Stopped)
+	expect.Equal(t, syscall.SIGTRAP, status.StopSignal)
+	expect.Equal(t, SingleStepTrap, status.TrapKind)
+	expect.Equal(t, "find_happiness", status.FunctionName)
+	expect.Equal(t, 1, db.callStack.NumUnexecutedInlinedFunctions())
+	expect.Equal(t, oldPC, status.NextInstructionAddress)
+
+	status, err = db.StepOut()
+	expect.Nil(t, err)
+	expect.True(t, status.Stopped)
+	expect.Equal(t, syscall.SIGTRAP, status.StopSignal)
+	expect.Equal(t, SingleStepTrap, status.TrapKind)
+	expect.Equal(t, "find_happiness", status.FunctionName)
+	expect.NotEqual(t, oldPC, status.NextInstructionAddress)
+
+	status, err = db.StepOut()
+	expect.Nil(t, err)
+	expect.True(t, status.Stopped)
+	expect.Equal(t, syscall.SIGTRAP, status.StopSignal)
+	expect.Equal(t, SingleStepTrap, status.TrapKind)
+	expect.Equal(t, "main", status.FunctionName)
 }
