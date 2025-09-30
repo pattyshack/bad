@@ -11,11 +11,33 @@ type State struct {
 	gpr ptrace.UserRegs
 	fpr ptrace.UserFPRegs
 	dr  [8]uintptr
+
+	// Only used for backtracing
+	undefined map[Spec]struct{}
+}
+
+func (state State) Copy() State {
+	newState := state
+
+	if state.undefined != nil {
+		undefined := make(map[Spec]struct{}, len(state.undefined))
+		for spec, _ := range state.undefined {
+			undefined[spec] = struct{}{}
+		}
+		newState.undefined = undefined
+	}
+
+	return newState
 }
 
 // This always returns Uint8 / Uint16 / Uint32 / Uint64 / Uint128 depending on
-// the register size.
+// the register size.  This returns nil if the value is undefined.
 func (state State) Value(reg Spec) Value {
+	_, ok := state.undefined[reg]
+	if ok {
+		return nil
+	}
+
 	var data reflect.Value
 	switch reg.Class {
 	case GeneralClass:
@@ -40,7 +62,12 @@ func (state State) Value(reg Spec) Value {
 		panic(fmt.Sprintf("invalid register: %#v", reg))
 	}
 
-	value := data.FieldByName(reg.Field).Uint()
+	field := data.FieldByName(reg.Field)
+	if !field.IsValid() {
+		return nil
+	}
+
+	value := field.Uint()
 	switch reg.Size {
 	case 1:
 		if reg.IsHighRegister {
@@ -71,7 +98,7 @@ func (state State) WithValue(
 		return State{}, err
 	}
 
-	newState := state
+	newState := state.Copy()
 
 	var data reflect.Value
 	switch reg.Class {
@@ -112,4 +139,28 @@ func (state State) WithValue(
 
 	data.FieldByName(reg.Field).SetUint(val)
 	return newState, nil
+}
+
+func (state State) WithUndefined(reg Spec) State {
+	_, ok := state.undefined[reg]
+	if ok {
+		return state
+	}
+
+	newState := state.Copy()
+	if newState.undefined == nil {
+		newState.undefined = map[Spec]struct{}{}
+	}
+
+	if reg.Class == GeneralClass {
+		// must include the full register as well as all its sub registers
+		for _, spec := range OrderedSpecs {
+			if spec.Class == GeneralClass && reg.Field == spec.Field {
+				newState.undefined[spec] = struct{}{}
+			}
+		}
+	} else {
+		newState.undefined[reg] = struct{}{}
+	}
+	return newState
 }

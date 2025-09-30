@@ -10,8 +10,6 @@ import (
 )
 
 const (
-	ElfDebugLineSection = ".debug_line"
-
 	DW_LNS_copy               = 0x01
 	DW_LNS_advance_pc         = 0x02
 	DW_LNS_advance_line       = 0x03

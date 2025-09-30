@@ -69,7 +69,8 @@ func (cursor *Cursor) Bytes(size int) ([]byte, error) {
 	content := cursor.remaining()
 	if size < 0 || len(content) < size {
 		return nil, fmt.Errorf(
-			"out of bound slice [%d:%d+%d]",
+			"out of bound slice %d [%d:%d+%d]",
+			len(content),
 			cursor.Position,
 			cursor.Position,
 			size)

@@ -8,6 +8,15 @@ import (
 
 var (
 	ErrSectionNotFound = fmt.Errorf("section not found")
+
+	ElfDebugAbbreviationSection = ".debug_abbrev"
+	ElfDebugRangesSection       = ".debug_ranges"
+	ElfDebugInformationSection  = ".debug_info"
+	ElfDebugLineSection         = ".debug_line"
+	ElfDebugStringSection       = ".debug_str"
+
+	ElfEhFrameSection = ".eh_frame"
+	ElfTextSection    = ".text"
 )
 
 type SectionOffset int
@@ -15,12 +24,13 @@ type SectionOffset int
 type File struct {
 	*elf.File
 
-	// NOTE: abbreviation, information, and line sections are required
+	// Required
 	*AbbreviationSection
 	*InformationSection
 	*LineSection
+	*EhFrameSection
 
-	// NOTE: string, address ranges and line sections are optional
+	// Optional
 	*StringSection
 	*AddressRangesSection
 }
@@ -41,6 +51,11 @@ func NewFile(elfFile *elf.File) (*File, error) {
 		return nil, err
 	}
 
+	ehFrameSection, err := NewEhFrameSection(elfFile)
+	if err != nil {
+		return nil, err
+	}
+
 	stringSection, err := NewStringSection(elfFile)
 	if err != nil {
 		return nil, err
@@ -56,6 +71,7 @@ func NewFile(elfFile *elf.File) (*File, error) {
 		AbbreviationSection:  abbrevSection,
 		InformationSection:   infoSection,
 		LineSection:          lineSection,
+		EhFrameSection:       ehFrameSection,
 		StringSection:        stringSection,
 		AddressRangesSection: addressRangesSection,
 	}

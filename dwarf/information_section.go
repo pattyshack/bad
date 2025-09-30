@@ -8,10 +8,6 @@ import (
 	"github.com/pattyshack/bad/elf"
 )
 
-const (
-	ElfDebugInformationSection = ".debug_info"
-)
-
 type ProcessFunc func(*DebugInfoEntry) error
 
 type CompileUnit struct {

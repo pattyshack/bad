@@ -9,8 +9,6 @@ import (
 )
 
 const (
-	ElfDebugRangesSection = ".debug_ranges"
-
 	baseAddressFlag = ^uint64(0)
 )
 

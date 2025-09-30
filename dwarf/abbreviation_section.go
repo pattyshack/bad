@@ -6,10 +6,6 @@ import (
 	"github.com/pattyshack/bad/elf"
 )
 
-const (
-	ElfDebugAbbreviationSection = ".debug_abbrev"
-)
-
 type AttributeSpec struct {
 	Attribute
 	Format

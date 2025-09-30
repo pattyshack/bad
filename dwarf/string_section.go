@@ -7,10 +7,6 @@ import (
 	"github.com/pattyshack/bad/elf"
 )
 
-const (
-	ElfDebugStringSection = ".debug_str"
-)
-
 type StringSection struct {
 	found   bool
 	content []byte

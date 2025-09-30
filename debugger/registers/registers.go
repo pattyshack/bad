@@ -51,6 +51,10 @@ func (registers *Registers) GetState() (State, error) {
 }
 
 func (registers *Registers) SetState(state State) error {
+	if len(state.undefined) > 0 {
+		return fmt.Errorf("cannot set register state with undefined values")
+	}
+
 	err := registers.tracer.SetGeneralRegisters(&state.gpr)
 	if err != nil {
 		return err
