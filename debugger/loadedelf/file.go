@@ -182,11 +182,8 @@ func (files *Files) FunctionEntryContainingAddress(
 ) {
 	for _, file := range files.Files {
 		entry, err := file.FunctionEntryContainingAddress(address)
-		if err != nil {
-			return nil, err
-		}
-		if entry != nil {
-			return entry, nil
+		if entry != nil || err != nil {
+			return entry, err
 		}
 	}
 
@@ -220,11 +217,8 @@ func (files *Files) LineEntryAt(
 ) {
 	for _, file := range files.Files {
 		entry, err := file.LineEntryAt(address)
-		if err != nil {
-			return nil, err
-		}
-		if entry != nil {
-			return entry, nil
+		if entry != nil || err != nil {
+			return entry, err
 		}
 	}
 
@@ -248,6 +242,21 @@ func (files *Files) LineEntriesByLine(
 	}
 
 	return result, nil
+}
+
+func (files *Files) ComputeUnwindRulesAt(
+	pc VirtualAddress,
+) (
+	*dwarf.UnwindRules,
+	error,
+) {
+	for _, file := range files.Files {
+		rules, err := file.ComputeUnwindRulesAt(pc)
+		if rules != nil || err != nil {
+			return rules, err
+		}
+	}
+	return nil, nil
 }
 
 type File struct {
@@ -389,4 +398,17 @@ func (file *File) LineEntriesByLine(
 	}
 
 	return file.Dwarf.GetLineEntriesByLine(pathName, int64(line))
+}
+
+func (file *File) ComputeUnwindRulesAt(
+	pc VirtualAddress,
+) (
+	*dwarf.UnwindRules,
+	error,
+) {
+	if file.Dwarf == nil {
+		return nil, nil
+	}
+
+	return file.Dwarf.ComputeUnwindRulesAt(file.ToFileAddress(pc))
 }

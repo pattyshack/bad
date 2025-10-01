@@ -124,14 +124,14 @@ func (status ProcessStatus) String() string {
 }
 
 func newInlinedStepInStatus(
-	proc *Debugger,
+	status *ProcessStatus,
 ) *ProcessStatus {
 	return &ProcessStatus{
-		Pid:                    proc.Pid,
+		Pid:                    status.Pid,
 		Stopped:                true,
 		StopSignal:             syscall.SIGTRAP,
-		NextInstructionAddress: proc.status.NextInstructionAddress,
-		FunctionName:           proc.status.FunctionName,
+		NextInstructionAddress: status.NextInstructionAddress,
+		FunctionName:           status.FunctionName,
 		TrapKind:               SingleStepTrap,
 	}
 }

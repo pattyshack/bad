@@ -487,6 +487,8 @@ func (section *InformationSection) FunctionEntryContainingAddress(
 	earlyExitErr := fmt.Errorf("early exit")
 	retErr := unit.ForEach(
 		func(entry *DebugInfoEntry) error {
+			// NOTE: DW_TAG_subprogram is the outer most function entry containing
+			// the address other DW_TAG_inlined_subroutine entries are ignored.
 			if entry.Tag != DW_TAG_subprogram {
 				return nil
 			}
@@ -559,7 +561,9 @@ func (section *InformationSection) FunctionEntriesWithName(
 	result := []*DebugInfoEntry{}
 	retErr := section.ForEach(
 		func(entry *DebugInfoEntry) error {
-			if entry.Tag != DW_TAG_subprogram {
+			if entry.Tag != DW_TAG_subprogram &&
+				entry.Tag != DW_TAG_inlined_subroutine {
+
 				return nil
 			}
 
@@ -567,11 +571,19 @@ func (section *InformationSection) FunctionEntriesWithName(
 			if err != nil {
 				return err
 			}
-
-			if ok && name == entryName {
-				result = append(result, entry)
+			if !ok || name != entryName {
+				return nil
 			}
 
+			addrRanges, err := entry.AddressRanges()
+			if err != nil {
+				return err
+			}
+			if len(addrRanges) == 0 {
+				return nil
+			}
+
+			result = append(result, entry)
 			return nil
 		})
 

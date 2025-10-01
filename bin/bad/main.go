@@ -133,37 +133,37 @@ func initializeCommands(debugger *debugger.Debugger) command {
 	return subCommands{
 		{
 			name:        "continue",
-			description: "   - resume the process",
+			description: " - resume the process",
 			command:     newFuncCmd(debugger, resume),
 		},
 		{
 			name:        "next",
-			description: "       - step over",
+			description: "     - step over",
 			command:     newFuncCmd(debugger, stepOver),
 		},
 		{
 			name:        "finish",
-			description: "     - step out",
+			description: "   - step out",
 			command:     newFuncCmd(debugger, stepOut),
 		},
 		{
 			name:        "step",
-			description: "       - step in",
+			description: "     - step in",
 			command:     newFuncCmd(debugger, stepIn),
 		},
 		{
 			name:        "single",
-			description: "     - single instruction step",
+			description: "   - single instruction step",
 			command:     newFuncCmd(debugger, stepInstruction),
 		},
 		{
 			name:        "register",
-			description: "   - commands for operating on registers",
+			description: " - commands for operating on registers",
 			command:     registerCmds,
 		},
 		{
 			name:        "memory",
-			description: "     - commands for operating on virtual memory",
+			description: "   - commands for operating on virtual memory",
 			command:     memoryCmds,
 		},
 		{
@@ -189,8 +189,19 @@ func initializeCommands(debugger *debugger.Debugger) command {
 			command:     catchPointCmds,
 		},
 		{
+			name: "backtrace",
+			description: ":\n" +
+				"    backtrace\n" +
+				"      - print backtrace without register values\n" +
+				"    backtrace <all|frame>\n" +
+				"      - print backtrace with general register values at <frame>\n" +
+				"    backtrace <all|frame> <all|register>\n" +
+				"      - print backtrace with selected <register> at <frame>",
+			command: newFuncCmd(debugger, backtrace),
+		},
+		{
 			name:        "print",
-			description: "      - print current status",
+			description: " - print current status",
 			command:     newFuncCmd(debugger, printStatus),
 		},
 	}

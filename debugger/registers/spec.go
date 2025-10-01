@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+
+	"github.com/pattyshack/bad/dwarf"
 )
 
 // The register class determines where the register data is located:
@@ -25,8 +27,8 @@ const (
 type Spec struct {
 	SortId int
 
-	Name    string
-	DwarfId int // -1 for invalid
+	Name             string
+	dwarf.RegisterId // -1 for invalid
 
 	Size uintptr // register size in bytes
 
@@ -183,9 +185,11 @@ func (reg Spec) ParseValue(value string) (Value, error) {
 
 var (
 	OrderedSpecs []Spec
-	Specs        map[string]Spec = map[string]Spec{}
+	NameSpecs    map[string]Spec           = map[string]Spec{}
+	IdSpecs      map[dwarf.RegisterId]Spec = map[dwarf.RegisterId]Spec{}
 
 	ProgramCounter Spec
+	StackPointer   Spec
 	FramePointer   Spec
 
 	SyscallNum  Spec
@@ -194,7 +198,12 @@ var (
 )
 
 func ByName(name string) (Spec, bool) {
-	reg, ok := Specs[name]
+	reg, ok := NameSpecs[name]
+	return reg, ok
+}
+
+func ById(id dwarf.RegisterId) (Spec, bool) {
+	reg, ok := IdSpecs[id]
 	return reg, ok
 }
 
@@ -210,15 +219,10 @@ func init() {
 		isHigh bool,
 		index int,
 	) {
-		_, ok := Specs[name]
-		if ok {
-			panic("duplicate register info: " + name)
-		}
-
 		entry := Spec{
 			SortId:         nextId,
 			Name:           name,
-			DwarfId:        dwarfId,
+			RegisterId:     dwarf.RegisterId(dwarfId),
 			Size:           size,
 			Class:          class,
 			Field:          field,
@@ -228,7 +232,20 @@ func init() {
 		nextId += 1
 
 		OrderedSpecs = append(OrderedSpecs, entry)
-		Specs[name] = entry
+
+		_, ok := NameSpecs[name]
+		if ok {
+			panic("duplicate register info: " + name)
+		}
+		NameSpecs[name] = entry
+
+		if entry.RegisterId != -1 {
+			_, ok := IdSpecs[entry.RegisterId]
+			if ok {
+				panic("duplicate register info: " + name)
+			}
+			IdSpecs[entry.RegisterId] = entry
+		}
 	}
 
 	addGpr64 := func(name string, dwarfId int, field string) {
@@ -357,6 +374,7 @@ func init() {
 	}
 
 	ProgramCounter, _ = ByName("rip")
+	StackPointer, _ = ByName("rsp")
 	FramePointer, _ = ByName("rbp")
 
 	SyscallNum, _ = ByName("orig_rax")

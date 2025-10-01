@@ -33,67 +33,44 @@ const (
 	DW_EH_PE_indirect = 0x80
 )
 
-type EhCommonInfoEntry struct {
-	SectionOffset
+type FrameSection struct {
+	*File
 
-	CodeAlignmentFactor uint64
-	DataAlignmentFactor uint64
+	ehFrameSectionStart    int64
+	ehFrameHdrSectionStart int64
+	textSectionStart       int64
+	gotPltSectionStart     int64 // 0 if the section is missing
 
-	HasAugmentation bool
-	PointerEncoding uint8
-
-	Instructions []byte
+	fdes []*FrameDescriptionEntry
 }
 
-type EhFrameDescriptionEntry struct {
-	SectionOffset
-
-	*EhCommonInfoEntry
-
-	AddressRange
-
-	Instructions []byte
+func (section *FrameSection) SetParent(file *File) {
+	section.File = file
 }
 
-type EhFramePointer struct {
-	// When IsTextRelative is true, the Offset is relative to the start of the
-	// .text section. Otherwise, Offset is either an absolute FileAddress, or an
-	// offset relative to the start of the function's FileAddress.
-	Offset uint64
-
-	IsTextRelative bool
-
-	// Only applicable when the pointer is a FileAddress.
-	IsFunctionRelative bool
-}
-
-type EhFrameSection struct {
-	entries []*EhFrameDescriptionEntry
-}
-
-func (section *EhFrameSection) EhFrameContainingAddress(
+func (section *FrameSection) FDEContainingAddress(
 	address elf.FileAddress,
-) *EhFrameDescriptionEntry {
+) *FrameDescriptionEntry {
 
-	entries := section.entries
-	if len(entries) == 0 || address < entries[0].Low {
+	fdes := section.fdes
+	if len(fdes) == 0 || address < fdes[0].Low {
 		return nil
 	}
 
-	for len(entries) > 2 {
-		midIdx := len(entries) / 2
+	for len(fdes) > 2 {
+		midIdx := len(fdes) / 2
 
-		mid := entries[midIdx]
+		mid := fdes[midIdx]
 		if address < mid.Low {
-			entries = entries[:midIdx]
+			fdes = fdes[:midIdx]
 		} else if address == mid.Low {
 			return mid
 		} else {
-			entries = entries[midIdx+1:]
+			fdes = fdes[midIdx+1:]
 		}
 	}
 
-	for _, entry := range entries {
+	for _, entry := range fdes {
 		if entry.Contains(address) {
 			return entry
 		}
@@ -102,23 +79,64 @@ func (section *EhFrameSection) EhFrameContainingAddress(
 	return nil
 }
 
-func NewEhFrameSection(file *elf.File) (*EhFrameSection, error) {
+func (section *FrameSection) ComputeUnwindRulesAt(
+	address elf.FileAddress,
+) (
+	*UnwindRules,
+	error,
+) {
+	fde := section.FDEContainingAddress(address)
+	if fde == nil {
+		return nil, nil
+	}
+
+	return computeUnwindRules(fde, address)
+}
+
+func NewFrameSection(file *elf.File) (*FrameSection, error) {
 	section := file.GetSection(ElfEhFrameSection)
 	if section == nil {
 		return nil, fmt.Errorf("elf .eh_frame %w", ErrSectionNotFound)
 	}
+	ehFrameSectionStart := int64(section.Header().Offset)
 
 	content, err := section.RawContent()
 	if err != nil {
 		return nil, fmt.Errorf("failed to read elf .eh_frame section: %w", err)
 	}
 
-	cursor := NewCursor(file.ByteOrder(), content)
+	section = file.GetSection(ElfEhFrameHdrSection)
+	if section == nil {
+		return nil, fmt.Errorf("elf .eh_frame_hdr %w", ErrSectionNotFound)
+	}
+	ehFrameHdrSectionStart := int64(section.Header().Offset)
 
-	parse := ehFrameParser{
-		currentSectionOffset: int64(section.Header().Offset),
-		Cursor:               cursor,
-		cies:                 map[SectionOffset]*EhCommonInfoEntry{},
+	section = file.GetSection(ElfTextSection)
+	if section == nil {
+		return nil, fmt.Errorf("elf .text %w", ErrSectionNotFound)
+	}
+	textSectionStart := int64(section.Header().Offset)
+
+	gotPltSectionStart := int64(0)
+	section = file.GetSection(ElfGotPltSection)
+	if section != nil {
+		gotPltSectionStart = int64(section.Header().Offset)
+	}
+
+	frameSection := &FrameSection{
+		ehFrameSectionStart:    ehFrameSectionStart,
+		ehFrameHdrSectionStart: ehFrameHdrSectionStart,
+		textSectionStart:       textSectionStart,
+		gotPltSectionStart:     gotPltSectionStart,
+	}
+
+	decoder := newFrameEntryDecoder(
+		frameSection,
+		NewCursor(file.ByteOrder(), content))
+	parse := frameParser{
+		framePointerDecoder: decoder,
+		cies:                map[SectionOffset]*CommonInfoEntry{},
+		FrameSection:        frameSection,
 	}
 
 	for !parse.HasReachedEnd() {
@@ -134,20 +152,44 @@ func NewEhFrameSection(file *elf.File) (*EhFrameSection, error) {
 			return parse.fdes[i].AddressRange.Low < parse.fdes[j].AddressRange.Low
 		})
 
-	return &EhFrameSection{
-		entries: parse.fdes,
-	}, nil
+	return frameSection, nil
 }
 
-type ehFrameParser struct {
-	currentSectionOffset int64
-	*Cursor
+type CommonInfoEntry struct {
+	*FrameSection
 
-	cies map[SectionOffset]*EhCommonInfoEntry
-	fdes []*EhFrameDescriptionEntry
+	SectionOffset
+
+	CodeAlignmentFactor uint64
+	DataAlignmentFactor int64
+
+	HasAugmentation bool
+	PointerEncoding uint8
+
+	InstructionsStart SectionOffset
+	Instructions      []byte
 }
 
-func (parse *ehFrameParser) frameEntry() error {
+type FrameDescriptionEntry struct {
+	SectionOffset
+
+	*CommonInfoEntry
+
+	AddressRange
+
+	InstructionsStart SectionOffset
+	Instructions      []byte
+}
+
+type frameParser struct {
+	*framePointerDecoder
+
+	cies map[SectionOffset]*CommonInfoEntry
+
+	*FrameSection
+}
+
+func (parse *frameParser) frameEntry() error {
 	start := parse.Position
 
 	size, err := parse.U32()
@@ -194,11 +236,11 @@ func (parse *ehFrameParser) frameEntry() error {
 	return nil
 }
 
-func (parse *ehFrameParser) commonInfoEntry(
+func (parse *frameParser) commonInfoEntry(
 	start int,
 	end int,
 ) (
-	*EhCommonInfoEntry,
+	*CommonInfoEntry,
 	error,
 ) {
 	version, err := parse.U8()
@@ -240,7 +282,7 @@ func (parse *ehFrameParser) commonInfoEntry(
 		return nil, fmt.Errorf("invalid code alignment factor: %w", err)
 	}
 
-	dataAlignmentFactor, err := parse.ULEB128(64)
+	dataAlignmentFactor, err := parse.SLEB128(64)
 	if err != nil {
 		return nil, fmt.Errorf("invalid data alignment factor: %w", err)
 	}
@@ -324,27 +366,30 @@ func (parse *ehFrameParser) commonInfoEntry(
 		}
 	}
 
+	instructionsStart := SectionOffset(parse.Position)
 	instructions, err := parse.Bytes(end - parse.Position)
 	if err != nil {
 		return nil, fmt.Errorf("invalid instructions: %w", err)
 	}
 
-	return &EhCommonInfoEntry{
+	return &CommonInfoEntry{
+		FrameSection:        parse.FrameSection,
 		SectionOffset:       SectionOffset(start),
 		CodeAlignmentFactor: codeAlignmentFactor,
 		DataAlignmentFactor: dataAlignmentFactor,
 		HasAugmentation:     hasAugmentation,
 		PointerEncoding:     pointerEncoding,
+		InstructionsStart:   instructionsStart,
 		Instructions:        instructions,
 	}, nil
 }
 
-func (parse *ehFrameParser) frameDescriptionEntry(
+func (parse *frameParser) frameDescriptionEntry(
 	start int,
 	end int,
 	cieId SectionOffset,
 ) (
-	*EhFrameDescriptionEntry,
+	*FrameDescriptionEntry,
 	error,
 ) {
 	cie, ok := parse.cies[cieId]
@@ -356,47 +401,111 @@ func (parse *ehFrameParser) frameDescriptionEntry(
 	if err != nil {
 		return nil, fmt.Errorf("invalid initial location address: %w", err)
 	}
-	if lowAddress.IsTextRelative || lowAddress.IsFunctionRelative {
-		// Expecting absolute file address.
-		return nil, fmt.Errorf(
-			"unexpected initial location address pointer (%v)",
-			lowAddress)
-	}
 
 	delta, err := parse.framePointer(cie.PointerEncoding)
 	if err != nil {
 		return nil, fmt.Errorf("invalid address range: %w", err)
 	}
-	if delta.IsTextRelative || delta.IsFunctionRelative {
-		// Expecting absolute file address.
-		return nil, fmt.Errorf("unexpected address range pointer (%v)", delta)
-	}
 
+	instructionsStart := SectionOffset(parse.Position)
 	instructions, err := parse.Bytes(end - parse.Position)
 	if err != nil {
 		return nil, fmt.Errorf("invalid instructions: %w", err)
 	}
 
-	return &EhFrameDescriptionEntry{
-		SectionOffset:     SectionOffset(start),
-		EhCommonInfoEntry: cie,
+	return &FrameDescriptionEntry{
+		SectionOffset:   SectionOffset(start),
+		CommonInfoEntry: cie,
 		AddressRange: AddressRange{
-			Low:  elf.FileAddress(lowAddress.Offset),
-			High: elf.FileAddress(lowAddress.Offset + delta.Offset),
+			Low:  lowAddress,
+			High: lowAddress + delta,
 		},
-		Instructions: instructions,
+		InstructionsStart: instructionsStart,
+		Instructions:      instructions,
 	}, nil
 }
 
-func (parse *ehFrameParser) framePointer(
+type framePointerDecoder struct {
+	cursorStart int64 // relative to the beginning of the elf file
+	*Cursor
+
+	// The start of the .text section
+	textStart int64
+
+	// When decoding .eh_frame_hdr entries, dataStart is the start of the
+	// .eh_frame_hdr section.
+	//
+	// When decoding .eh_frame entries, dataStart is 0.
+	//
+	// When decoding CIE/FDE instructions, dataStart is either the start of
+	// the .got.plt section, or 0 if the section is missing.
+	dataStart int64
+
+	// When parsing cie/fde instructions, FuncStart is fde.AddressRange.Low.
+	// Otherwise, FuncStart is zero.
+	funcStart int64
+}
+
+func newFrameEntryDecoder(
+	section *FrameSection,
+	cursor *Cursor,
+) *framePointerDecoder {
+	return &framePointerDecoder{
+		cursorStart: section.ehFrameSectionStart,
+		Cursor:      cursor,
+		textStart:   section.textSectionStart,
+		dataStart:   0,
+		funcStart:   0,
+	}
+}
+
+func newCIEInstructionDecoder(
+	state *cfiState,
+) *framePointerDecoder {
+	fde := state.FrameDescriptionEntry
+
+	cursorStart := fde.ehFrameSectionStart
+	cursorStart += int64(fde.CommonInfoEntry.InstructionsStart)
+
+	cursor := NewCursor(fde.ByteOrder(), fde.CommonInfoEntry.Instructions)
+
+	return &framePointerDecoder{
+		cursorStart: cursorStart,
+		Cursor:      cursor,
+		textStart:   fde.textSectionStart,
+		dataStart:   fde.gotPltSectionStart,
+		funcStart:   int64(fde.AddressRange.Low),
+	}
+}
+
+func newFDEInstructionDecoder(
+	state *cfiState,
+) *framePointerDecoder {
+	fde := state.FrameDescriptionEntry
+
+	cursorStart := fde.ehFrameSectionStart
+	cursorStart += int64(fde.InstructionsStart)
+
+	cursor := NewCursor(fde.ByteOrder(), fde.Instructions)
+
+	return &framePointerDecoder{
+		cursorStart: cursorStart,
+		Cursor:      cursor,
+		textStart:   fde.textSectionStart,
+		dataStart:   fde.gotPltSectionStart,
+		funcStart:   int64(fde.AddressRange.Low),
+	}
+}
+
+func (decode *framePointerDecoder) framePointer(
 	encoding uint8,
 ) (
-	EhFramePointer,
+	elf.FileAddress,
 	error,
 ) {
-	ptr, err := parse._parseEhFramePointer(encoding)
+	ptr, err := decode._framePointer(encoding)
 	if err != nil {
-		return EhFramePointer{}, fmt.Errorf(
+		return 0, fmt.Errorf(
 			"failed to parse eh frame pointer: %w",
 			err)
 	}
@@ -404,101 +513,87 @@ func (parse *ehFrameParser) framePointer(
 	return ptr, nil
 }
 
-func (parse *ehFrameParser) _parseEhFramePointer(
+func (decode *framePointerDecoder) _framePointer(
 	encoding uint8,
 ) (
-	EhFramePointer,
+	elf.FileAddress,
 	error,
 ) {
 	base := int64(0)
-	isTextRelative := false
-	isFunctionRelative := false
 	switch encoding & 0x70 {
 	case DW_EH_PE_absptr:
 		// do nothing
 	case DW_EH_PE_pcrel:
-		base = parse.currentSectionOffset + int64(parse.Position)
+		base = decode.cursorStart + int64(decode.Position)
 	case DW_EH_PE_textrel:
-		isTextRelative = true
+		base = decode.textStart
 	case DW_EH_PE_datarel:
-		// NOTE: When parsing entries from .eh_frame_hdr, the pointer is relative
-		// to the .eh_frame_hdr section start. For everything else, the pointer is
-		// the absolute location.
-		//
-		// Do nothing since aren't parsing .eh_frame_hdr.
+		base = decode.dataStart
 	case DW_EH_PE_funcrel:
-		isFunctionRelative = true
+		base = decode.funcStart
 	default:
-		return EhFramePointer{}, fmt.Errorf(
-			"unsupported eh frame pointer encoding (%d)",
-			encoding)
+		return 0, fmt.Errorf("unsupported eh frame pointer encoding (%d)", encoding)
 	}
 
-	delta := int64(0)
+	offset := int64(0)
 
 	switch encoding & 0xf {
 	case DW_EH_PE_absptr, DW_EH_PE_udata8:
-		off, err := parse.U64()
+		off, err := decode.U64()
 		if err != nil {
-			return EhFramePointer{}, err
+			return 0, err
 		}
-		delta = int64(off)
+		offset = int64(off)
 	case DW_EH_PE_uleb128:
-		off, err := parse.ULEB128(31)
+		off, err := decode.ULEB128(31)
 		if err != nil {
-			return EhFramePointer{}, err
+			return 0, err
 		}
-		delta = int64(off)
+		offset = int64(off)
 	case DW_EH_PE_udata2:
-		off, err := parse.U16()
+		off, err := decode.U16()
 		if err != nil {
-			return EhFramePointer{}, err
+			return 0, err
 		}
-		delta = int64(off)
+		offset = int64(off)
 	case DW_EH_PE_udata4:
-		off, err := parse.U32()
+		off, err := decode.U32()
 		if err != nil {
-			return EhFramePointer{}, err
+			return 0, err
 		}
-		delta = int64(off)
+		offset = int64(off)
 	case DW_EH_PE_sleb128:
-		off, err := parse.SLEB128(32)
+		off, err := decode.SLEB128(32)
 		if err != nil {
-			return EhFramePointer{}, err
+			return 0, err
 		}
-		delta = off
+		offset = off
 	case DW_EH_PE_sdata2:
-		off, err := parse.S16()
+		off, err := decode.S16()
 		if err != nil {
-			return EhFramePointer{}, err
+			return 0, err
 		}
-		delta = int64(off)
+		offset = int64(off)
 	case DW_EH_PE_sdata4:
-		off, err := parse.S32()
+		off, err := decode.S32()
 		if err != nil {
-			return EhFramePointer{}, err
+			return 0, err
 		}
-		delta = int64(off)
+		offset = int64(off)
 	case DW_EH_PE_sdata8:
-		off, err := parse.S64()
+		off, err := decode.S64()
 		if err != nil {
-			return EhFramePointer{}, err
+			return 0, err
 		}
-		delta = off
+		offset = off
 	default:
-		return EhFramePointer{}, fmt.Errorf(
-			"unsupported eh frame pointer encoding (%d)",
-			encoding)
+		return 0, fmt.Errorf("unsupported eh frame pointer encoding (%d)", encoding)
 	}
 
-	offset := base + delta
-	if offset < 0 {
-		return EhFramePointer{}, fmt.Errorf("negative section offset (%d)", offset)
+	addr := base + offset
+	if addr < 0 {
+		return 0, fmt.Errorf("negative file addr (%d)", addr)
 	}
 
-	return EhFramePointer{
-		Offset:             uint64(offset),
-		IsTextRelative:     isTextRelative,
-		IsFunctionRelative: isFunctionRelative,
-	}, nil
+	return elf.FileAddress(addr), nil
 }

@@ -15,8 +15,10 @@ var (
 	ElfDebugLineSection         = ".debug_line"
 	ElfDebugStringSection       = ".debug_str"
 
-	ElfEhFrameSection = ".eh_frame"
-	ElfTextSection    = ".text"
+	ElfEhFrameSection    = ".eh_frame"
+	ElfEhFrameHdrSection = ".eh_frame_hdr"
+	ElfTextSection       = ".text"
+	ElfGotPltSection     = ".got.plt"
 )
 
 type SectionOffset int
@@ -28,7 +30,7 @@ type File struct {
 	*AbbreviationSection
 	*InformationSection
 	*LineSection
-	*EhFrameSection
+	*FrameSection
 
 	// Optional
 	*StringSection
@@ -51,7 +53,7 @@ func NewFile(elfFile *elf.File) (*File, error) {
 		return nil, err
 	}
 
-	ehFrameSection, err := NewEhFrameSection(elfFile)
+	ehFrameSection, err := NewFrameSection(elfFile)
 	if err != nil {
 		return nil, err
 	}
@@ -71,11 +73,12 @@ func NewFile(elfFile *elf.File) (*File, error) {
 		AbbreviationSection:  abbrevSection,
 		InformationSection:   infoSection,
 		LineSection:          lineSection,
-		EhFrameSection:       ehFrameSection,
+		FrameSection:         ehFrameSection,
 		StringSection:        stringSection,
 		AddressRangesSection: addressRangesSection,
 	}
 	infoSection.SetParent(file)
+	ehFrameSection.SetParent(file)
 
 	return file, nil
 }

@@ -8,35 +8,33 @@ import (
 	"github.com/pattyshack/bad/debugger/registers"
 )
 
-func readRegister(db *debugger.Debugger, args []string) error {
-	if len(args) > 0 && args[0] != "all" {
-		reg, ok := registers.ByName(args[0])
+func printRegisters(
+	indent string,
+	state registers.State,
+	match string, // "", "all", or "<name>"
+) {
+	if match != "" && match != "all" {
+		reg, ok := registers.ByName(match)
 		if !ok {
-			fmt.Println("Invalid register:", args[0])
-			return nil
+			fmt.Printf("%sInvalid register: %s", indent, match)
+			return
 		}
 
-		state, err := db.Registers.GetState()
-		if err != nil {
-			return err
+		value := state.Value(reg)
+		if value == nil {
+			fmt.Printf("%s%-8s (undefined)\n", indent, reg.Name)
+		} else {
+			fmt.Printf("%s%-8s %s\n", indent, reg.Name, value)
 		}
-
-		fmt.Printf("%s: %s\n", reg.Name, state.Value(reg))
-		return nil
-	}
-
-	state, err := db.Registers.GetState()
-	if err != nil {
-		return err
+		return
 	}
 
 	for _, reg := range registers.OrderedSpecs {
-		// Skip printing general sub registers
-		if reg.Class == registers.GeneralClass && reg.DwarfId == -1 {
+		if reg.Class == registers.GeneralClass && reg.RegisterId == -1 {
 			continue
 		}
 
-		if len(args) == 0 && reg.Class != registers.GeneralClass {
+		if match == "" && reg.Class != registers.GeneralClass {
 			continue
 		}
 
@@ -49,13 +47,30 @@ func readRegister(db *debugger.Debugger, args []string) error {
 			}
 		}
 
-		format := "%s:\t\t%s\n"
-		if len(name) >= 7 {
-			format = "%s:\t%s\n"
+		value := state.Value(reg)
+		valueStr := "(undefined)"
+		if value != nil {
+			valueStr = value.String()
 		}
-		fmt.Printf(format, name, state.Value(reg))
+
+		format := "%s%-8s %s\n"
+		fmt.Printf(format, indent, name, valueStr)
+	}
+}
+
+func readRegister(db *debugger.Debugger, args []string) error {
+	state, err := db.Registers.GetState()
+	if err != nil {
+		return err
 	}
 
+	match := ""
+	if len(args) > 0 {
+		match = args[0]
+	}
+
+	fmt.Println("Registers:", match)
+	printRegisters("  ", state, match)
 	return nil
 }
 

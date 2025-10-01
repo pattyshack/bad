@@ -9,6 +9,10 @@ import (
 
 type FileAddress uint64
 
+func (addr FileAddress) String() string {
+	return fmt.Sprintf("0x%016x", uint64(addr))
+}
+
 type Section interface {
 	File() *File
 

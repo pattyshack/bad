@@ -18,7 +18,7 @@ func TestRegisters(t *testing.T) {
 func (RegistersSuite) TestRax(t *testing.T) {
 	rax, ok := ByName("rax")
 	expect.True(t, ok)
-	expect.Equal(t, 0, rax.DwarfId)
+	expect.Equal(t, 0, rax.RegisterId)
 
 	eax, ok := ByName("eax")
 	expect.True(t, ok)
@@ -36,26 +36,31 @@ func (RegistersSuite) TestRax(t *testing.T) {
 	state.gpr.Rax = 0x0102030405060708
 
 	val := state.Value(rax)
+	expect.NotNil(t, val)
 	u64, ok := val.(Uint64)
 	expect.True(t, ok)
 	expect.Equal(t, 0x0102030405060708, u64.Value)
 
 	val = state.Value(eax)
+	expect.NotNil(t, val)
 	u32, ok := val.(Uint32)
 	expect.True(t, ok)
 	expect.Equal(t, 0x05060708, u32.Value)
 
 	val = state.Value(ax)
+	expect.NotNil(t, val)
 	u16, ok := val.(Uint16)
 	expect.True(t, ok)
 	expect.Equal(t, 0x0708, u16.Value)
 
 	val = state.Value(al)
+	expect.NotNil(t, val)
 	u8, ok := val.(Uint8)
 	expect.True(t, ok)
 	expect.Equal(t, 0x08, u8.Value)
 
 	val = state.Value(ah)
+	expect.NotNil(t, val)
 	u8, ok = val.(Uint8)
 	expect.True(t, ok)
 	expect.Equal(t, 0x07, u8.Value)
@@ -89,7 +94,7 @@ func (RegistersSuite) TestRax(t *testing.T) {
 func (RegistersSuite) TestRbx(t *testing.T) {
 	rbx, ok := ByName("rbx")
 	expect.True(t, ok)
-	expect.Equal(t, 3, rbx.DwarfId)
+	expect.Equal(t, 3, rbx.RegisterId)
 
 	ebx, ok := ByName("ebx")
 	expect.True(t, ok)
@@ -106,28 +111,33 @@ func (RegistersSuite) TestRbx(t *testing.T) {
 	state := State{}
 	state.gpr.Rbx = 0x0102030405060708
 
-	vbl := state.Value(rbx)
-	u64, ok := vbl.(Uint64)
+	val := state.Value(rbx)
+	expect.NotNil(t, val)
+	u64, ok := val.(Uint64)
 	expect.True(t, ok)
 	expect.Equal(t, 0x0102030405060708, u64.Value)
 
-	vbl = state.Value(ebx)
-	u32, ok := vbl.(Uint32)
+	val = state.Value(ebx)
+	expect.NotNil(t, val)
+	u32, ok := val.(Uint32)
 	expect.True(t, ok)
 	expect.Equal(t, 0x05060708, u32.Value)
 
-	vbl = state.Value(bx)
-	u16, ok := vbl.(Uint16)
+	val = state.Value(bx)
+	expect.NotNil(t, val)
+	u16, ok := val.(Uint16)
 	expect.True(t, ok)
 	expect.Equal(t, 0x0708, u16.Value)
 
-	vbl = state.Value(bl)
-	u8, ok := vbl.(Uint8)
+	val = state.Value(bl)
+	expect.NotNil(t, val)
+	u8, ok := val.(Uint8)
 	expect.True(t, ok)
 	expect.Equal(t, 0x08, u8.Value)
 
-	vbl = state.Value(bh)
-	u8, ok = vbl.(Uint8)
+	val = state.Value(bh)
+	expect.NotNil(t, val)
+	u8, ok = val.(Uint8)
 	expect.True(t, ok)
 	expect.Equal(t, 0x07, u8.Value)
 
@@ -190,7 +200,7 @@ func (RegistersSuite) TestRbx(t *testing.T) {
 func (RegistersSuite) TestRcx(t *testing.T) {
 	rcx, ok := ByName("rcx")
 	expect.True(t, ok)
-	expect.Equal(t, 2, rcx.DwarfId)
+	expect.Equal(t, 2, rcx.RegisterId)
 
 	ecx, ok := ByName("ecx")
 	expect.True(t, ok)
@@ -208,26 +218,31 @@ func (RegistersSuite) TestRcx(t *testing.T) {
 	state.gpr.Rcx = 0x0102030405060708
 
 	val := state.Value(rcx)
+	expect.NotNil(t, val)
 	u64, ok := val.(Uint64)
 	expect.True(t, ok)
 	expect.Equal(t, 0x0102030405060708, u64.Value)
 
 	val = state.Value(ecx)
+	expect.NotNil(t, val)
 	u32, ok := val.(Uint32)
 	expect.True(t, ok)
 	expect.Equal(t, 0x05060708, u32.Value)
 
 	val = state.Value(cx)
+	expect.NotNil(t, val)
 	u16, ok := val.(Uint16)
 	expect.True(t, ok)
 	expect.Equal(t, 0x0708, u16.Value)
 
 	val = state.Value(cl)
+	expect.NotNil(t, val)
 	u8, ok := val.(Uint8)
 	expect.True(t, ok)
 	expect.Equal(t, 0x08, u8.Value)
 
 	val = state.Value(ch)
+	expect.NotNil(t, val)
 	u8, ok = val.(Uint8)
 	expect.True(t, ok)
 	expect.Equal(t, 0x07, u8.Value)
@@ -261,7 +276,7 @@ func (RegistersSuite) TestRcx(t *testing.T) {
 func (RegistersSuite) TestRdx(t *testing.T) {
 	rdx, ok := ByName("rdx")
 	expect.True(t, ok)
-	expect.Equal(t, 1, rdx.DwarfId)
+	expect.Equal(t, 1, rdx.RegisterId)
 
 	edx, ok := ByName("edx")
 	expect.True(t, ok)
@@ -279,26 +294,31 @@ func (RegistersSuite) TestRdx(t *testing.T) {
 	state.gpr.Rdx = 0x0102030405060708
 
 	val := state.Value(rdx)
+	expect.NotNil(t, val)
 	u64, ok := val.(Uint64)
 	expect.True(t, ok)
 	expect.Equal(t, 0x0102030405060708, u64.Value)
 
 	val = state.Value(edx)
+	expect.NotNil(t, val)
 	u32, ok := val.(Uint32)
 	expect.True(t, ok)
 	expect.Equal(t, 0x05060708, u32.Value)
 
 	val = state.Value(dx)
+	expect.NotNil(t, val)
 	u16, ok := val.(Uint16)
 	expect.True(t, ok)
 	expect.Equal(t, 0x0708, u16.Value)
 
 	val = state.Value(dl)
+	expect.NotNil(t, val)
 	u8, ok := val.(Uint8)
 	expect.True(t, ok)
 	expect.Equal(t, 0x08, u8.Value)
 
 	val = state.Value(dh)
+	expect.NotNil(t, val)
 	u8, ok = val.(Uint8)
 	expect.True(t, ok)
 	expect.Equal(t, 0x07, u8.Value)
@@ -332,7 +352,7 @@ func (RegistersSuite) TestRdx(t *testing.T) {
 func (RegistersSuite) TestRsi(t *testing.T) {
 	rsi, ok := ByName("rsi")
 	expect.True(t, ok)
-	expect.Equal(t, 4, rsi.DwarfId)
+	expect.Equal(t, 4, rsi.RegisterId)
 
 	esi, ok := ByName("esi")
 	expect.True(t, ok)
@@ -347,21 +367,25 @@ func (RegistersSuite) TestRsi(t *testing.T) {
 	state.gpr.Rsi = 0x0102030405060708
 
 	val := state.Value(rsi)
+	expect.NotNil(t, val)
 	u64, ok := val.(Uint64)
 	expect.True(t, ok)
 	expect.Equal(t, 0x0102030405060708, u64.Value)
 
 	val = state.Value(esi)
+	expect.NotNil(t, val)
 	u32, ok := val.(Uint32)
 	expect.True(t, ok)
 	expect.Equal(t, 0x05060708, u32.Value)
 
 	val = state.Value(si)
+	expect.NotNil(t, val)
 	u16, ok := val.(Uint16)
 	expect.True(t, ok)
 	expect.Equal(t, 0x0708, u16.Value)
 
 	val = state.Value(sil)
+	expect.NotNil(t, val)
 	u8, ok := val.(Uint8)
 	expect.True(t, ok)
 	expect.Equal(t, 0x08, u8.Value)
@@ -390,7 +414,7 @@ func (RegistersSuite) TestRsi(t *testing.T) {
 func (RegistersSuite) TestRdi(t *testing.T) {
 	rdi, ok := ByName("rdi")
 	expect.True(t, ok)
-	expect.Equal(t, 5, rdi.DwarfId)
+	expect.Equal(t, 5, rdi.RegisterId)
 
 	edi, ok := ByName("edi")
 	expect.True(t, ok)
@@ -405,21 +429,25 @@ func (RegistersSuite) TestRdi(t *testing.T) {
 	state.gpr.Rdi = 0x0102030405060708
 
 	val := state.Value(rdi)
+	expect.NotNil(t, val)
 	u64, ok := val.(Uint64)
 	expect.True(t, ok)
 	expect.Equal(t, 0x0102030405060708, u64.Value)
 
 	val = state.Value(edi)
+	expect.NotNil(t, val)
 	u32, ok := val.(Uint32)
 	expect.True(t, ok)
 	expect.Equal(t, 0x05060708, u32.Value)
 
 	val = state.Value(di)
+	expect.NotNil(t, val)
 	u16, ok := val.(Uint16)
 	expect.True(t, ok)
 	expect.Equal(t, 0x0708, u16.Value)
 
 	val = state.Value(dil)
+	expect.NotNil(t, val)
 	u8, ok := val.(Uint8)
 	expect.True(t, ok)
 	expect.Equal(t, 0x08, u8.Value)
@@ -448,7 +476,7 @@ func (RegistersSuite) TestRdi(t *testing.T) {
 func (RegistersSuite) TestRbp(t *testing.T) {
 	rbp, ok := ByName("rbp")
 	expect.True(t, ok)
-	expect.Equal(t, 6, rbp.DwarfId)
+	expect.Equal(t, 6, rbp.RegisterId)
 
 	ebp, ok := ByName("ebp")
 	expect.True(t, ok)
@@ -463,21 +491,25 @@ func (RegistersSuite) TestRbp(t *testing.T) {
 	state.gpr.Rbp = 0x0102030405060708
 
 	val := state.Value(rbp)
+	expect.NotNil(t, val)
 	u64, ok := val.(Uint64)
 	expect.True(t, ok)
 	expect.Equal(t, 0x0102030405060708, u64.Value)
 
 	val = state.Value(ebp)
+	expect.NotNil(t, val)
 	u32, ok := val.(Uint32)
 	expect.True(t, ok)
 	expect.Equal(t, 0x05060708, u32.Value)
 
 	val = state.Value(bp)
+	expect.NotNil(t, val)
 	u16, ok := val.(Uint16)
 	expect.True(t, ok)
 	expect.Equal(t, 0x0708, u16.Value)
 
 	val = state.Value(bpl)
+	expect.NotNil(t, val)
 	u8, ok := val.(Uint8)
 	expect.True(t, ok)
 	expect.Equal(t, 0x08, u8.Value)
@@ -506,7 +538,7 @@ func (RegistersSuite) TestRbp(t *testing.T) {
 func (RegistersSuite) TestRsp(t *testing.T) {
 	rsp, ok := ByName("rsp")
 	expect.True(t, ok)
-	expect.Equal(t, 7, rsp.DwarfId)
+	expect.Equal(t, 7, rsp.RegisterId)
 
 	esp, ok := ByName("esp")
 	expect.True(t, ok)
@@ -521,21 +553,25 @@ func (RegistersSuite) TestRsp(t *testing.T) {
 	state.gpr.Rsp = 0x0102030405060708
 
 	val := state.Value(rsp)
+	expect.NotNil(t, val)
 	u64, ok := val.(Uint64)
 	expect.True(t, ok)
 	expect.Equal(t, 0x0102030405060708, u64.Value)
 
 	val = state.Value(esp)
+	expect.NotNil(t, val)
 	u32, ok := val.(Uint32)
 	expect.True(t, ok)
 	expect.Equal(t, 0x05060708, u32.Value)
 
 	val = state.Value(sp)
+	expect.NotNil(t, val)
 	u16, ok := val.(Uint16)
 	expect.True(t, ok)
 	expect.Equal(t, 0x0708, u16.Value)
 
 	val = state.Value(spl)
+	expect.NotNil(t, val)
 	u8, ok := val.(Uint8)
 	expect.True(t, ok)
 	expect.Equal(t, 0x08, u8.Value)
@@ -564,7 +600,7 @@ func (RegistersSuite) TestRsp(t *testing.T) {
 func (RegistersSuite) TestR8(t *testing.T) {
 	r8, ok := ByName("r8")
 	expect.True(t, ok)
-	expect.Equal(t, 8, r8.DwarfId)
+	expect.Equal(t, 8, r8.RegisterId)
 
 	r8d, ok := ByName("r8d")
 	expect.True(t, ok)
@@ -579,21 +615,25 @@ func (RegistersSuite) TestR8(t *testing.T) {
 	state.gpr.R8 = 0x0102030405060708
 
 	val := state.Value(r8)
+	expect.NotNil(t, val)
 	u64, ok := val.(Uint64)
 	expect.True(t, ok)
 	expect.Equal(t, 0x0102030405060708, u64.Value)
 
 	val = state.Value(r8d)
+	expect.NotNil(t, val)
 	u32, ok := val.(Uint32)
 	expect.True(t, ok)
 	expect.Equal(t, 0x05060708, u32.Value)
 
 	val = state.Value(r8w)
+	expect.NotNil(t, val)
 	u16, ok := val.(Uint16)
 	expect.True(t, ok)
 	expect.Equal(t, 0x0708, u16.Value)
 
 	val = state.Value(r8b)
+	expect.NotNil(t, val)
 	u8, ok := val.(Uint8)
 	expect.True(t, ok)
 	expect.Equal(t, 0x08, u8.Value)
@@ -622,7 +662,7 @@ func (RegistersSuite) TestR8(t *testing.T) {
 func (RegistersSuite) TestR9(t *testing.T) {
 	r9, ok := ByName("r9")
 	expect.True(t, ok)
-	expect.Equal(t, 9, r9.DwarfId)
+	expect.Equal(t, 9, r9.RegisterId)
 
 	r9d, ok := ByName("r9d")
 	expect.True(t, ok)
@@ -637,21 +677,25 @@ func (RegistersSuite) TestR9(t *testing.T) {
 	state.gpr.R9 = 0x0102030405060708
 
 	val := state.Value(r9)
+	expect.NotNil(t, val)
 	u64, ok := val.(Uint64)
 	expect.True(t, ok)
 	expect.Equal(t, 0x0102030405060708, u64.Value)
 
 	val = state.Value(r9d)
+	expect.NotNil(t, val)
 	u32, ok := val.(Uint32)
 	expect.True(t, ok)
 	expect.Equal(t, 0x05060708, u32.Value)
 
 	val = state.Value(r9w)
+	expect.NotNil(t, val)
 	u16, ok := val.(Uint16)
 	expect.True(t, ok)
 	expect.Equal(t, 0x0708, u16.Value)
 
 	val = state.Value(r9b)
+	expect.NotNil(t, val)
 	u8, ok := val.(Uint8)
 	expect.True(t, ok)
 	expect.Equal(t, 0x08, u8.Value)
@@ -680,7 +724,7 @@ func (RegistersSuite) TestR9(t *testing.T) {
 func (RegistersSuite) TestR10(t *testing.T) {
 	r10, ok := ByName("r10")
 	expect.True(t, ok)
-	expect.Equal(t, 10, r10.DwarfId)
+	expect.Equal(t, 10, r10.RegisterId)
 
 	r10d, ok := ByName("r10d")
 	expect.True(t, ok)
@@ -695,21 +739,25 @@ func (RegistersSuite) TestR10(t *testing.T) {
 	state.gpr.R10 = 0x0102030405060708
 
 	val := state.Value(r10)
+	expect.NotNil(t, val)
 	u64, ok := val.(Uint64)
 	expect.True(t, ok)
 	expect.Equal(t, 0x0102030405060708, u64.Value)
 
 	val = state.Value(r10d)
+	expect.NotNil(t, val)
 	u32, ok := val.(Uint32)
 	expect.True(t, ok)
 	expect.Equal(t, 0x05060708, u32.Value)
 
 	val = state.Value(r10w)
+	expect.NotNil(t, val)
 	u16, ok := val.(Uint16)
 	expect.True(t, ok)
 	expect.Equal(t, 0x0708, u16.Value)
 
 	val = state.Value(r10b)
+	expect.NotNil(t, val)
 	u8, ok := val.(Uint8)
 	expect.True(t, ok)
 	expect.Equal(t, 0x08, u8.Value)
@@ -738,7 +786,7 @@ func (RegistersSuite) TestR10(t *testing.T) {
 func (RegistersSuite) TestR11(t *testing.T) {
 	r11, ok := ByName("r11")
 	expect.True(t, ok)
-	expect.Equal(t, 11, r11.DwarfId)
+	expect.Equal(t, 11, r11.RegisterId)
 
 	r11d, ok := ByName("r11d")
 	expect.True(t, ok)
@@ -753,21 +801,25 @@ func (RegistersSuite) TestR11(t *testing.T) {
 	state.gpr.R11 = 0x0102030405060708
 
 	val := state.Value(r11)
+	expect.NotNil(t, val)
 	u64, ok := val.(Uint64)
 	expect.True(t, ok)
 	expect.Equal(t, 0x0102030405060708, u64.Value)
 
 	val = state.Value(r11d)
+	expect.NotNil(t, val)
 	u32, ok := val.(Uint32)
 	expect.True(t, ok)
 	expect.Equal(t, 0x05060708, u32.Value)
 
 	val = state.Value(r11w)
+	expect.NotNil(t, val)
 	u16, ok := val.(Uint16)
 	expect.True(t, ok)
 	expect.Equal(t, 0x0708, u16.Value)
 
 	val = state.Value(r11b)
+	expect.NotNil(t, val)
 	u8, ok := val.(Uint8)
 	expect.True(t, ok)
 	expect.Equal(t, 0x08, u8.Value)
@@ -804,7 +856,7 @@ func (RegistersSuite) TestR11(t *testing.T) {
 func (RegistersSuite) TestR12(t *testing.T) {
 	r12, ok := ByName("r12")
 	expect.True(t, ok)
-	expect.Equal(t, 12, r12.DwarfId)
+	expect.Equal(t, 12, r12.RegisterId)
 
 	r12d, ok := ByName("r12d")
 	expect.True(t, ok)
@@ -819,21 +871,25 @@ func (RegistersSuite) TestR12(t *testing.T) {
 	state.gpr.R12 = 0x0102030405060708
 
 	val := state.Value(r12)
+	expect.NotNil(t, val)
 	u64, ok := val.(Uint64)
 	expect.True(t, ok)
 	expect.Equal(t, 0x0102030405060708, u64.Value)
 
 	val = state.Value(r12d)
+	expect.NotNil(t, val)
 	u32, ok := val.(Uint32)
 	expect.True(t, ok)
 	expect.Equal(t, 0x05060708, u32.Value)
 
 	val = state.Value(r12w)
+	expect.NotNil(t, val)
 	u16, ok := val.(Uint16)
 	expect.True(t, ok)
 	expect.Equal(t, 0x0708, u16.Value)
 
 	val = state.Value(r12b)
+	expect.NotNil(t, val)
 	u8, ok := val.(Uint8)
 	expect.True(t, ok)
 	expect.Equal(t, 0x08, u8.Value)
@@ -870,7 +926,7 @@ func (RegistersSuite) TestR12(t *testing.T) {
 func (RegistersSuite) TestR13(t *testing.T) {
 	r13, ok := ByName("r13")
 	expect.True(t, ok)
-	expect.Equal(t, 13, r13.DwarfId)
+	expect.Equal(t, 13, r13.RegisterId)
 
 	r13d, ok := ByName("r13d")
 	expect.True(t, ok)
@@ -885,21 +941,25 @@ func (RegistersSuite) TestR13(t *testing.T) {
 	state.gpr.R13 = 0x0102030405060708
 
 	val := state.Value(r13)
+	expect.NotNil(t, val)
 	u64, ok := val.(Uint64)
 	expect.True(t, ok)
 	expect.Equal(t, 0x0102030405060708, u64.Value)
 
 	val = state.Value(r13d)
+	expect.NotNil(t, val)
 	u32, ok := val.(Uint32)
 	expect.True(t, ok)
 	expect.Equal(t, 0x05060708, u32.Value)
 
 	val = state.Value(r13w)
+	expect.NotNil(t, val)
 	u16, ok := val.(Uint16)
 	expect.True(t, ok)
 	expect.Equal(t, 0x0708, u16.Value)
 
 	val = state.Value(r13b)
+	expect.NotNil(t, val)
 	u8, ok := val.(Uint8)
 	expect.True(t, ok)
 	expect.Equal(t, 0x08, u8.Value)
@@ -936,7 +996,7 @@ func (RegistersSuite) TestR13(t *testing.T) {
 func (RegistersSuite) TestR14(t *testing.T) {
 	r14, ok := ByName("r14")
 	expect.True(t, ok)
-	expect.Equal(t, 14, r14.DwarfId)
+	expect.Equal(t, 14, r14.RegisterId)
 
 	r14d, ok := ByName("r14d")
 	expect.True(t, ok)
@@ -951,21 +1011,25 @@ func (RegistersSuite) TestR14(t *testing.T) {
 	state.gpr.R14 = 0x0102030405060708
 
 	val := state.Value(r14)
+	expect.NotNil(t, val)
 	u64, ok := val.(Uint64)
 	expect.True(t, ok)
 	expect.Equal(t, 0x0102030405060708, u64.Value)
 
 	val = state.Value(r14d)
+	expect.NotNil(t, val)
 	u32, ok := val.(Uint32)
 	expect.True(t, ok)
 	expect.Equal(t, 0x05060708, u32.Value)
 
 	val = state.Value(r14w)
+	expect.NotNil(t, val)
 	u16, ok := val.(Uint16)
 	expect.True(t, ok)
 	expect.Equal(t, 0x0708, u16.Value)
 
 	val = state.Value(r14b)
+	expect.NotNil(t, val)
 	u8, ok := val.(Uint8)
 	expect.True(t, ok)
 	expect.Equal(t, 0x08, u8.Value)
@@ -1002,7 +1066,7 @@ func (RegistersSuite) TestR14(t *testing.T) {
 func (RegistersSuite) TestR15(t *testing.T) {
 	r15, ok := ByName("r15")
 	expect.True(t, ok)
-	expect.Equal(t, 15, r15.DwarfId)
+	expect.Equal(t, 15, r15.RegisterId)
 
 	r15d, ok := ByName("r15d")
 	expect.True(t, ok)
@@ -1017,21 +1081,25 @@ func (RegistersSuite) TestR15(t *testing.T) {
 	state.gpr.R15 = 0x0102030405060708
 
 	val := state.Value(r15)
+	expect.NotNil(t, val)
 	u64, ok := val.(Uint64)
 	expect.True(t, ok)
 	expect.Equal(t, 0x0102030405060708, u64.Value)
 
 	val = state.Value(r15d)
+	expect.NotNil(t, val)
 	u32, ok := val.(Uint32)
 	expect.True(t, ok)
 	expect.Equal(t, 0x05060708, u32.Value)
 
 	val = state.Value(r15w)
+	expect.NotNil(t, val)
 	u16, ok := val.(Uint16)
 	expect.True(t, ok)
 	expect.Equal(t, 0x0708, u16.Value)
 
 	val = state.Value(r15b)
+	expect.NotNil(t, val)
 	u8, ok := val.(Uint8)
 	expect.True(t, ok)
 	expect.Equal(t, 0x08, u8.Value)
@@ -1068,12 +1136,13 @@ func (RegistersSuite) TestR15(t *testing.T) {
 func (RegistersSuite) TestRip(t *testing.T) {
 	rip, ok := ByName("rip")
 	expect.True(t, ok)
-	expect.Equal(t, 16, rip.DwarfId)
+	expect.Equal(t, 16, rip.RegisterId)
 
 	state := State{}
 	state.gpr.Rip = 0x0102030405060708
 
 	val := state.Value(rip)
+	expect.NotNil(t, val)
 	u64, ok := val.(Uint64)
 	expect.True(t, ok)
 	expect.Equal(t, 0x0102030405060708, u64.Value)
@@ -1089,12 +1158,13 @@ func (RegistersSuite) TestRip(t *testing.T) {
 func (RegistersSuite) TestEflags(t *testing.T) {
 	eflags, ok := ByName("eflags")
 	expect.True(t, ok)
-	expect.Equal(t, 49, eflags.DwarfId)
+	expect.Equal(t, 49, eflags.RegisterId)
 
 	state := State{}
 	state.gpr.Eflags = 0x0102030405060708
 
 	val := state.Value(eflags)
+	expect.NotNil(t, val)
 	u64, ok := val.(Uint64)
 	expect.True(t, ok)
 	expect.Equal(t, 0x0102030405060708, u64.Value)
@@ -1110,12 +1180,13 @@ func (RegistersSuite) TestEflags(t *testing.T) {
 func (RegistersSuite) TestCs(t *testing.T) {
 	cs, ok := ByName("cs")
 	expect.True(t, ok)
-	expect.Equal(t, 51, cs.DwarfId)
+	expect.Equal(t, 51, cs.RegisterId)
 
 	state := State{}
 	state.gpr.Cs = 0x0102030405060708
 
 	val := state.Value(cs)
+	expect.NotNil(t, val)
 	u64, ok := val.(Uint64)
 	expect.True(t, ok)
 	expect.Equal(t, 0x0102030405060708, u64.Value)
@@ -1131,12 +1202,13 @@ func (RegistersSuite) TestCs(t *testing.T) {
 func (RegistersSuite) TestFs(t *testing.T) {
 	fs, ok := ByName("fs")
 	expect.True(t, ok)
-	expect.Equal(t, 54, fs.DwarfId)
+	expect.Equal(t, 54, fs.RegisterId)
 
 	state := State{}
 	state.gpr.Fs = 0x0102030405060708
 
 	val := state.Value(fs)
+	expect.NotNil(t, val)
 	u64, ok := val.(Uint64)
 	expect.True(t, ok)
 	expect.Equal(t, 0x0102030405060708, u64.Value)
@@ -1152,12 +1224,13 @@ func (RegistersSuite) TestFs(t *testing.T) {
 func (RegistersSuite) TestGs(t *testing.T) {
 	gs, ok := ByName("gs")
 	expect.True(t, ok)
-	expect.Equal(t, 55, gs.DwarfId)
+	expect.Equal(t, 55, gs.RegisterId)
 
 	state := State{}
 	state.gpr.Gs = 0x0102030405060708
 
 	val := state.Value(gs)
+	expect.NotNil(t, val)
 	u64, ok := val.(Uint64)
 	expect.True(t, ok)
 	expect.Equal(t, 0x0102030405060708, u64.Value)
@@ -1173,12 +1246,13 @@ func (RegistersSuite) TestGs(t *testing.T) {
 func (RegistersSuite) TestSs(t *testing.T) {
 	ss, ok := ByName("ss")
 	expect.True(t, ok)
-	expect.Equal(t, 52, ss.DwarfId)
+	expect.Equal(t, 52, ss.RegisterId)
 
 	state := State{}
 	state.gpr.Ss = 0x0102030405060708
 
 	val := state.Value(ss)
+	expect.NotNil(t, val)
 	u64, ok := val.(Uint64)
 	expect.True(t, ok)
 	expect.Equal(t, 0x0102030405060708, u64.Value)
@@ -1194,12 +1268,13 @@ func (RegistersSuite) TestSs(t *testing.T) {
 func (RegistersSuite) TestDs(t *testing.T) {
 	ds, ok := ByName("ds")
 	expect.True(t, ok)
-	expect.Equal(t, 53, ds.DwarfId)
+	expect.Equal(t, 53, ds.RegisterId)
 
 	state := State{}
 	state.gpr.Ds = 0x0102030405060708
 
 	val := state.Value(ds)
+	expect.NotNil(t, val)
 	u64, ok := val.(Uint64)
 	expect.True(t, ok)
 	expect.Equal(t, 0x0102030405060708, u64.Value)
@@ -1215,12 +1290,13 @@ func (RegistersSuite) TestDs(t *testing.T) {
 func (RegistersSuite) TestEs(t *testing.T) {
 	es, ok := ByName("es")
 	expect.True(t, ok)
-	expect.Equal(t, 50, es.DwarfId)
+	expect.Equal(t, 50, es.RegisterId)
 
 	state := State{}
 	state.gpr.Es = 0x0102030405060708
 
 	val := state.Value(es)
+	expect.NotNil(t, val)
 	u64, ok := val.(Uint64)
 	expect.True(t, ok)
 	expect.Equal(t, 0x0102030405060708, u64.Value)
@@ -1236,12 +1312,13 @@ func (RegistersSuite) TestEs(t *testing.T) {
 func (RegistersSuite) TestFcw(t *testing.T) {
 	fcw, ok := ByName("fcw")
 	expect.True(t, ok)
-	expect.Equal(t, 65, fcw.DwarfId)
+	expect.Equal(t, 65, fcw.RegisterId)
 
 	state := State{}
 	state.fpr.Cwd = 0x0102
 
 	val := state.Value(fcw)
+	expect.NotNil(t, val)
 	u16, ok := val.(Uint16)
 	expect.True(t, ok)
 	expect.Equal(t, 0x0102, u16.Value)
@@ -1255,12 +1332,13 @@ func (RegistersSuite) TestFcw(t *testing.T) {
 func (RegistersSuite) TestFsw(t *testing.T) {
 	fsw, ok := ByName("fsw")
 	expect.True(t, ok)
-	expect.Equal(t, 66, fsw.DwarfId)
+	expect.Equal(t, 66, fsw.RegisterId)
 
 	state := State{}
 	state.fpr.Swd = 0x0102
 
 	val := state.Value(fsw)
+	expect.NotNil(t, val)
 	u16, ok := val.(Uint16)
 	expect.True(t, ok)
 	expect.Equal(t, 0x0102, u16.Value)
@@ -1279,6 +1357,7 @@ func (RegistersSuite) TestFtw(t *testing.T) {
 	state.fpr.Ftw = 0x0102
 
 	val := state.Value(ftw)
+	expect.NotNil(t, val)
 	u16, ok := val.(Uint16)
 	expect.True(t, ok)
 	expect.Equal(t, 0x0102, u16.Value)
@@ -1297,6 +1376,7 @@ func (RegistersSuite) TestFop(t *testing.T) {
 	state.fpr.Fop = 0x0102
 
 	val := state.Value(fop)
+	expect.NotNil(t, val)
 	u16, ok := val.(Uint16)
 	expect.True(t, ok)
 	expect.Equal(t, 0x0102, u16.Value)
@@ -1315,6 +1395,7 @@ func (RegistersSuite) TestFrip(t *testing.T) {
 	state.fpr.Rip = 0x0102030405060708
 
 	val := state.Value(frip)
+	expect.NotNil(t, val)
 	u64, ok := val.(Uint64)
 	expect.True(t, ok)
 	expect.Equal(t, 0x0102030405060708, u64.Value)
@@ -1335,6 +1416,7 @@ func (RegistersSuite) TestFrdp(t *testing.T) {
 	state.fpr.Rdp = 0x0102030405060708
 
 	val := state.Value(frdp)
+	expect.NotNil(t, val)
 	u64, ok := val.(Uint64)
 	expect.True(t, ok)
 	expect.Equal(t, 0x0102030405060708, u64.Value)
@@ -1355,6 +1437,7 @@ func (RegistersSuite) TestMxcsr(t *testing.T) {
 	state.fpr.Mxcsr = 0x01020304
 
 	val := state.Value(mxcsr)
+	expect.NotNil(t, val)
 	u32, ok := val.(Uint32)
 	expect.True(t, ok)
 	expect.Equal(t, 0x01020304, u32.Value)
@@ -1375,6 +1458,7 @@ func (RegistersSuite) TestMxcrMask(t *testing.T) {
 	state.fpr.MxcrMask = 0x01020304
 
 	val := state.Value(mxcrmask)
+	expect.NotNil(t, val)
 	u32, ok := val.(Uint32)
 	expect.True(t, ok)
 	expect.Equal(t, 0x01020304, u32.Value)
@@ -1411,12 +1495,14 @@ func TestStMm(t *testing.T) {
 		state.fpr.StSpace[highIdx] = high
 
 		val := state.Value(st)
+		expect.NotNil(t, val)
 		u128, ok := val.(Uint128)
 		expect.True(t, ok)
 		expect.Equal(t, low, u128.Low)
 		expect.Equal(t, high, u128.High)
 
 		val = state.Value(mm)
+		expect.NotNil(t, val)
 		u128, ok = val.(Uint128)
 		expect.True(t, ok)
 		expect.Equal(t, low, u128.Low)
@@ -1486,6 +1572,7 @@ func TestXmm(t *testing.T) {
 		state.fpr.XmmSpace[highIdx] = high
 
 		val := state.Value(xmm)
+		expect.NotNil(t, val)
 		u128, ok := val.(Uint128)
 		expect.True(t, ok)
 		expect.Equal(t, low, u128.Low)
@@ -1539,6 +1626,7 @@ func (RegistersSuite) Testdr(t *testing.T) {
 		state.dr[i] = uintptr(value)
 
 		val := state.Value(dr)
+		expect.NotNil(t, val)
 		u64, ok := val.(Uint64)
 		expect.True(t, ok)
 		expect.Equal(t, value, u64.Value)

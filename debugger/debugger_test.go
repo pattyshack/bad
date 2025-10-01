@@ -626,7 +626,7 @@ func (DebuggerSuite) TestSyscallCatchpoint(t *testing.T) {
 	expect.False(t, state.SyscallTrapInfo.IsEntry)
 }
 
-func TestSourceLevelBreakPoints(t *testing.T) {
+func (DebuggerSuite) TestSourceLevelBreakPoints(t *testing.T) {
 	cmd := exec.Command("test_targets/overloaded")
 	db, err := StartAndAttachTo(cmd)
 	expect.Nil(t, err)
@@ -677,7 +677,7 @@ func TestSourceLevelBreakPoints(t *testing.T) {
 	expect.True(t, status.Exited)
 }
 
-func TestSourceLevelStepping(t *testing.T) {
+func (DebuggerSuite) TestSourceLevelStepping(t *testing.T) {
 	cmd := exec.Command("test_targets/step")
 	db, err := StartAndAttachTo(cmd)
 	expect.Nil(t, err)
@@ -711,7 +711,7 @@ func TestSourceLevelStepping(t *testing.T) {
 	expect.Equal(t, syscall.SIGTRAP, status.StopSignal)
 	expect.Equal(t, SingleStepTrap, status.TrapKind)
 	expect.Equal(t, "find_happiness", status.FunctionName)
-	expect.Equal(t, 2, db.callStack.NumUnexecutedInlinedFunctions())
+	expect.Equal(t, 2, db.CallStack.NumUnexecutedInlinedFunctions())
 
 	oldPC = status.NextInstructionAddress
 
@@ -721,7 +721,7 @@ func TestSourceLevelStepping(t *testing.T) {
 	expect.Equal(t, syscall.SIGTRAP, status.StopSignal)
 	expect.Equal(t, SingleStepTrap, status.TrapKind)
 	expect.Equal(t, "find_happiness", status.FunctionName)
-	expect.Equal(t, 1, db.callStack.NumUnexecutedInlinedFunctions())
+	expect.Equal(t, 1, db.CallStack.NumUnexecutedInlinedFunctions())
 	expect.Equal(t, oldPC, status.NextInstructionAddress)
 
 	status, err = db.StepOut()
@@ -738,4 +738,54 @@ func TestSourceLevelStepping(t *testing.T) {
 	expect.Equal(t, syscall.SIGTRAP, status.StopSignal)
 	expect.Equal(t, SingleStepTrap, status.TrapKind)
 	expect.Equal(t, "main", status.FunctionName)
+}
+
+func (DebuggerSuite) TestStackUnwinding(t *testing.T) {
+	cmd := exec.Command("test_targets/step")
+	db, err := StartAndAttachTo(cmd)
+	expect.Nil(t, err)
+	defer db.Close()
+
+	_, err = db.BreakPoints.Set(
+		db.NewFunctionResolver("scratch_ears"),
+		stoppoint.NewBreakSiteType(false),
+		true)
+
+	status, err := db.ResumeUntilSignal()
+	expect.Nil(t, err)
+	expect.True(t, status.Stopped)
+	expect.Equal(t, syscall.SIGTRAP, status.StopSignal)
+	expect.Equal(t, SoftwareTrap, status.TrapKind)
+
+	status, err = db.StepIn()
+	expect.Nil(t, err)
+	expect.True(t, status.Stopped)
+	expect.Equal(t, syscall.SIGTRAP, status.StopSignal)
+	expect.Equal(t, SingleStepTrap, status.TrapKind)
+
+	status, err = db.StepIn()
+	expect.Nil(t, err)
+	expect.True(t, status.Stopped)
+	expect.Equal(t, syscall.SIGTRAP, status.StopSignal)
+	expect.Equal(t, SingleStepTrap, status.TrapKind)
+
+	frames := db.CallStack.ExecutingStack()
+	expect.Equal(t, 4, len(frames))
+
+	names := []string{}
+	inlines := []bool{}
+	for _, frame := range frames {
+		names = append(names, frame.Name)
+		inlines = append(inlines, frame.IsInlined())
+	}
+
+	expect.Equal(
+		t,
+		[]string{"scratch_ears", "pet_cat", "find_happiness", "main"},
+		names)
+
+	expect.Equal(
+		t,
+		[]bool{true, true, false, false},
+		inlines)
 }

@@ -42,7 +42,7 @@ type Debugger struct {
 
 	*memory.Disassembler
 
-	callStack *CallStack
+	CallStack *CallStack
 
 	LoadedElf *loadedelf.Files
 	*SourceFiles
@@ -74,7 +74,7 @@ func newDebugger(tracer *ptrace.Tracer, ownsProcess bool) (*Debugger, error) {
 		WatchPoints:        stoppoint.NewWatchPointSet(stopSites),
 		SyscallCatchPolicy: catchpoint.NewSyscallCatchPolicy(),
 		Disassembler:       memory.NewDisassembler(mem, stopSites),
-		callStack:          newCallStack(loadedElfFiles),
+		CallStack:          newCallStack(loadedElfFiles, mem),
 		LoadedElf:          loadedElfFiles,
 		SourceFiles:        NewSourceFiles(),
 		Pid:                tracer.Pid(),
@@ -217,23 +217,20 @@ func (db *Debugger) StepIn() (*ProcessStatus, error) {
 			ErrProcessExited)
 	}
 
-	if db.callStack.MaybeStepIntoInlinedFunction() {
-		db.status = newInlinedStepInStatus(db)
+	inlinedStepInStatus, err := db.CallStack.MaybeStepIntoInlinedFunction(
+		db.status)
+	if err != nil {
+		return nil, fmt.Errorf("failed to step in for process %d: %w", db.Pid, err)
+	}
 
-		err := db.callStack.Update(db.status)
-		if err != nil {
-			return nil, fmt.Errorf(
-				"failed to step into inlined function for process %d: %w",
-				db.Pid,
-				err)
-		}
-
+	if inlinedStepInStatus != nil {
+		db.status = inlinedStepInStatus
 		db.expectsSyscallExit = false
 		return db.status, nil
 	}
 
 	enabledSites := db.stopSites.GetEnabledAt(db.status.NextInstructionAddress)
-	err := enabledSites.Disable()
+	err = enabledSites.Disable()
 	if err != nil {
 		return nil, fmt.Errorf("failed to step in for process %d: %w", db.Pid, err)
 	}
@@ -304,11 +301,11 @@ func (db *Debugger) StepOut() (*ProcessStatus, error) {
 	}
 
 	var returnAddress VirtualAddress
-	isInlined, codeRanges := db.callStack.CurrentFrame()
-	if isInlined {
+	frame := db.CallStack.CurrentFrame()
+	if frame != nil && frame.IsInlined() {
 		// XXX: This is not completely correct since the inlined function may
 		// jump to any address, but is good enough for our purpose.
-		returnAddress = codeRanges[len(codeRanges)-1].High
+		returnAddress = frame.CodeRanges[len(frame.CodeRanges)-1].High
 	} else {
 		state, err := db.Registers.GetState()
 		if err != nil {
@@ -368,7 +365,7 @@ func (db *Debugger) stepUntilDifferentLine(stepOver bool) error {
 	}
 
 	for {
-		codeRanges := db.callStack.UnexecutedInlinedFunctionCodeRanges()
+		codeRanges := db.CallStack.UnexecutedInlinedFunctionCodeRanges()
 		if stepOver && len(codeRanges) > 0 {
 			err := db.resumeUntilAddressOrSignal(codeRanges[len(codeRanges)-1].High)
 			if err != nil {
@@ -579,11 +576,6 @@ func (db *Debugger) updateStatus(waitStatus syscall.WaitStatus) error {
 		return fmt.Errorf("failed to wait for process %d: %w", db.Pid, err)
 	}
 
-	err = db.callStack.Update(status)
-	if err != nil {
-		return fmt.Errorf("failed to update call stack: %w", err)
-	}
-
 	if shouldResetProgramCounter {
 		err := db.Registers.SetProgramCounter(status.NextInstructionAddress)
 		if err != nil {
@@ -595,13 +587,31 @@ func (db *Debugger) updateStatus(waitStatus syscall.WaitStatus) error {
 		}
 	}
 
-	if status.Stopped && status.StopSignal == syscall.SIGTRAP {
-		if status.TrapKind == SyscallTrap {
-			db.expectsSyscallExit = !db.expectsSyscallExit
-		} else {
-			// In case syscall catch point got disabled after syscall entry, but
-			// before syscall exit.
-			db.expectsSyscallExit = false
+	if status.Stopped {
+		state, err := db.Registers.GetState()
+		if err != nil {
+			return fmt.Errorf(
+				"failed to update call stack for process %d: %w",
+				db.Pid,
+				err)
+		}
+
+		err = db.CallStack.Update(status, state)
+		if err != nil {
+			return fmt.Errorf(
+				"failed to update call stack for process %d: %w",
+				db.Pid,
+				err)
+		}
+
+		if status.StopSignal == syscall.SIGTRAP {
+			if status.TrapKind == SyscallTrap {
+				db.expectsSyscallExit = !db.expectsSyscallExit
+			} else {
+				// In case syscall catch point got disabled after syscall entry, but
+				// before syscall exit.
+				db.expectsSyscallExit = false
+			}
 		}
 	}
 
