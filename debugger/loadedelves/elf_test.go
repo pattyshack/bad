@@ -1,4 +1,4 @@
-package loadedelf
+package loadedelves
 
 import (
 	"os"
@@ -38,7 +38,7 @@ func (ElfSuite) TestParse(t *testing.T) {
 	content, err := os.ReadFile("../test_targets/hello_world")
 	expect.Nil(t, err)
 
-	file, err := elf.ParseBytes(content)
+	file, err := elf.ParseBytes("", content)
 	expect.Nil(t, err)
 
 	section := file.GetSection(".symtab")

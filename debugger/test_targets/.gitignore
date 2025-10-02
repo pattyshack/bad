@@ -13,3 +13,6 @@ reg_read
 reg_write
 run_endlessly
 step
+
+libmeow.so
+marshmallow

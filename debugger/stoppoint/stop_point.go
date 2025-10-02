@@ -169,6 +169,16 @@ func (set *StopPointSet) Match(
 	return result
 }
 
+func (set *StopPointSet) ResolveStopSites() error {
+	for _, point := range set.allocated {
+		err := point.ResolveStopSites()
+		if err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 type StopPoint struct {
 	set *StopPointSet
 

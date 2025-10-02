@@ -5,7 +5,8 @@ import (
 	"flag"
 	"fmt"
 	"io"
-	"strconv"
+	"net/http"
+	_ "net/http/pprof"
 	"strings"
 
 	"github.com/chzyer/readline"
@@ -204,52 +205,17 @@ func initializeCommands(debugger *debugger.Debugger) command {
 			description: " - print current status",
 			command:     newFuncCmd(debugger, printStatus),
 		},
+		{
+			name:        "elves",
+			description: " - print loaded elves",
+			command:     newFuncCmd(debugger, printElves),
+		},
 	}
 }
 
 type noOpCmd struct{}
 
 func (noOpCmd) run(db *debugger.Debugger, args []string) error {
-	return nil
-}
-
-func printProcessStatus(db *debugger.Debugger, status *debugger.ProcessStatus) {
-	fmt.Println(status)
-	if !status.Stopped {
-		return
-	}
-
-	if status.FileEntry != nil {
-		snippet, err := db.SourceFiles.GetSnippet(
-			status.FileEntry.Path(),
-			int(status.Line),
-			5)
-		if err != nil {
-			fmt.Printf("failed to read source snippet: %s\n", err)
-		} else {
-			fmt.Println()
-			fmt.Println(snippet)
-			return
-		}
-	}
-
-	instructions, err := db.Disassemble(status.NextInstructionAddress, 5)
-	if err != nil {
-		fmt.Printf(
-			"failed to disassemble instructions at %x: %s\n",
-			status.NextInstructionAddress,
-			err)
-		return
-	}
-
-	fmt.Println()
-	for _, inst := range instructions {
-		fmt.Println(inst)
-	}
-}
-
-func printStatus(db *debugger.Debugger, args []string) error {
-	printProcessStatus(db, db.Status())
 	return nil
 }
 
@@ -323,72 +289,27 @@ func stepInstruction(db *debugger.Debugger, args []string) error {
 	return nil
 }
 
-func disassemble(db *debugger.Debugger, args []string) error {
-	addrStr := ""
-	addr := db.Status().NextInstructionAddress
-
-	numInstStr := ""
-	numInst := 5
-	for _, arg := range args {
-		if strings.HasPrefix(arg, "@") {
-			if addrStr == "" {
-				addrStr = arg
-				val, err := strconv.ParseUint(arg[1:], 0, 64)
-				if err != nil {
-					fmt.Printf("Invalid @<addr> argument (%s): %s\n", arg, err)
-					return nil
-				}
-				addr = VirtualAddress(val)
-			} else {
-				fmt.Println(
-					"Invalid arguments. multiple @<addr> specified.",
-					addrStr,
-					"vs",
-					arg)
-				return nil
-			}
-		} else {
-			if numInstStr == "" {
-				numInstStr = arg
-				val, err := strconv.ParseInt(arg, 0, 32)
-				if err != nil {
-					fmt.Printf("Invalid <n> argument (%s): %s\n", arg, err)
-					return nil
-				}
-				numInst = int(val)
-			} else {
-				fmt.Println(
-					"Invalid arguments. multiple <n> specified.",
-					numInstStr,
-					"vs",
-					arg)
-				return nil
-			}
-		}
-	}
-
-	instructions, err := db.Disassemble(addr, numInst)
-	if err != nil {
-		fmt.Printf(
-			"failed to disassemble instructions at %x: %s\n",
-			addr,
-			err)
-		return nil
-	}
-
-	for _, inst := range instructions {
-		fmt.Println(inst)
-	}
-
-	return nil
-}
-
 func main() {
 	pid := 0
 	flag.IntVar(&pid, "p", 0, "attach to existing process pid")
 
+	port := 0
+	flag.IntVar(&port, "port", 0, "start http server (for pprof)")
+
 	flag.Parse()
 	args := flag.Args()
+
+	if port != 0 {
+		pprofServer := &http.Server{
+			Addr: fmt.Sprintf(":%d", port),
+		}
+		go func() {
+			err := pprofServer.ListenAndServe()
+			if err != nil {
+				panic(err)
+			}
+		}()
+	}
 
 	var db *debugger.Debugger
 	var err error
@@ -417,10 +338,7 @@ func main() {
 
 	topCmds := initializeCommands(db)
 
-	fmt.Printf(
-		"attached to process %d (load bias: 0x%x)\n",
-		db.Pid,
-		db.LoadedElf.Files[0].LoadBias)
+	fmt.Printf("attached to process %d\n", db.Pid)
 
 	rl, err := readline.New("bad > ")
 	if err != nil {

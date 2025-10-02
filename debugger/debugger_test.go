@@ -7,6 +7,7 @@ import (
 	"math"
 	"os"
 	"os/exec"
+	"path"
 	"syscall"
 	"testing"
 
@@ -274,11 +275,11 @@ func (DebuggerSuite) TestGetRegisterState(t *testing.T) {
 	// check r13
 
 	status, err := db.ResumeUntilSignal()
+	expect.Nil(t, err)
 	expect.True(t, status.Stopped)
 
 	regState, err := db.Registers.GetState()
 	expect.Nil(t, err)
-
 	r13, ok := registers.ByName("r13")
 	expect.True(t, ok)
 
@@ -378,7 +379,7 @@ func (DebuggerSuite) TestSoftwareBreakPointSite(t *testing.T) {
 	err = writer.Close()
 	expect.Nil(t, err)
 
-	loadAddress := db.LoadedElf.Files[0].EntryPointVirtualAddress()
+	loadAddress := db.LoadedElves.EntryPoint()
 
 	_, err = db.BreakPoints.Set(
 		db.NewAddressResolver(loadAddress),
@@ -636,6 +637,7 @@ func (DebuggerSuite) TestSourceLevelBreakPoints(t *testing.T) {
 		db.NewLineResolver("overloaded.cpp", 17),
 		stoppoint.NewBreakSiteType(false),
 		true)
+	expect.Nil(t, err)
 
 	status, err := db.ResumeUntilSignal()
 	expect.Nil(t, err)
@@ -649,6 +651,7 @@ func (DebuggerSuite) TestSourceLevelBreakPoints(t *testing.T) {
 		db.NewFunctionResolver("print_type"),
 		stoppoint.NewBreakSiteType(false),
 		true)
+	expect.Nil(t, err)
 
 	sites := point.Sites()
 	expect.Equal(t, 3, len(sites))
@@ -687,6 +690,7 @@ func (DebuggerSuite) TestSourceLevelStepping(t *testing.T) {
 		db.NewFunctionResolver("main"),
 		stoppoint.NewBreakSiteType(false),
 		true)
+	expect.Nil(t, err)
 
 	status, err := db.ResumeUntilSignal()
 	expect.Nil(t, err)
@@ -750,6 +754,7 @@ func (DebuggerSuite) TestStackUnwinding(t *testing.T) {
 		db.NewFunctionResolver("scratch_ears"),
 		stoppoint.NewBreakSiteType(false),
 		true)
+	expect.Nil(t, err)
 
 	status, err := db.ResumeUntilSignal()
 	expect.Nil(t, err)
@@ -788,4 +793,40 @@ func (DebuggerSuite) TestStackUnwinding(t *testing.T) {
 		t,
 		[]bool{true, true, false, false},
 		inlines)
+}
+
+func (DebuggerSuite) TestSharedLibraryTracing(t *testing.T) {
+	cmd := exec.Command("test_targets/marshmallow")
+	db, err := StartAndAttachTo(cmd)
+	expect.Nil(t, err)
+	defer db.Close()
+
+	_, err = db.BreakPoints.Set(
+		db.NewFunctionResolver("libmeow_client_is_cute"),
+		stoppoint.NewBreakSiteType(false),
+		true)
+	expect.Nil(t, err)
+
+	status, err := db.ResumeUntilSignal()
+	expect.Nil(t, err)
+	expect.True(t, status.Stopped)
+	expect.Equal(t, SoftwareTrap, status.TrapKind)
+
+	frames := db.CallStack.ExecutingStack()
+	expect.Equal(t, 2, len(frames))
+
+	names := []string{}
+	libs := []string{}
+	for _, frame := range frames {
+		names = append(names, frame.Name)
+
+		fileName := frame.SourceFile.CompileUnit.File.FileName
+		if fileName != "" {
+			fileName = path.Base(fileName)
+		}
+		libs = append(libs, fileName)
+	}
+
+	expect.Equal(t, []string{"libmeow_client_is_cute", "main"}, names)
+	expect.Equal(t, []string{"libmeow.so", ""}, libs)
 }

@@ -13,7 +13,7 @@ import (
 type machineSpec struct {
 	MachineArchitecture
 	DataEncoding
-	OperatingSystemABI
+	OsABIs map[OperatingSystemABI]struct{}
 }
 
 var (
@@ -22,12 +22,16 @@ var (
 		MachineArchitectureX86_64: machineSpec{
 			MachineArchitecture: MachineArchitectureX86_64,
 			DataEncoding:        DataEncodingTwosComplementLittleEndian,
-			OperatingSystemABI:  OperatingSystemABIUnixSystemV,
+			OsABIs: map[OperatingSystemABI]struct{}{
+				OperatingSystemABIUnixSystemV: struct{}{},
+				OperatingSystemABILinux:       struct{}{},
+			},
 		},
 	}
 )
 
 type File struct {
+	FileName string
 	ElfHeader
 	Sections       []Section
 	ProgramHeaders []ProgramHeaderEntry
@@ -51,19 +55,21 @@ type parser struct {
 	*File
 }
 
-func Parse(reader io.Reader) (*File, error) {
+func Parse(fileName string, reader io.Reader) (*File, error) {
 	content, err := io.ReadAll(reader)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read elf file: %w", err)
 	}
 
-	return ParseBytes(content)
+	return ParseBytes(fileName, content)
 }
 
-func ParseBytes(content []byte) (*File, error) {
+func ParseBytes(fileName string, content []byte) (*File, error) {
 	p := parser{
 		content: content,
-		File:    &File{},
+		File: &File{
+			FileName: fileName,
+		},
 	}
 
 	err := p.parse()
@@ -134,7 +140,10 @@ func (p *parser) parseIdentifier() error {
 			id.IdentifierVersion)
 	}
 
-	if id.OperatingSystemABI != OperatingSystemABIUnixSystemV {
+	switch id.OperatingSystemABI {
+	case OperatingSystemABIUnixSystemV, OperatingSystemABILinux:
+		// ok
+	default:
 		return fmt.Errorf("unsupported os/abi: %s", id.OperatingSystemABI)
 	}
 
@@ -175,7 +184,8 @@ func (p *parser) parseHeader() error {
 			p.MachineArchitecture)
 	}
 
-	if spec.OperatingSystemABI != p.OperatingSystemABI {
+	_, ok = spec.OsABIs[p.OperatingSystemABI]
+	if !ok {
 		return fmt.Errorf(
 			"invalid os/abi (%s) for machine architecture (%s)",
 			p.OperatingSystemABI,

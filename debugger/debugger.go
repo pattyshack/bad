@@ -2,6 +2,7 @@ package debugger
 
 import (
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -11,11 +12,11 @@ import (
 
 	"github.com/pattyshack/bad/debugger/catchpoint"
 	. "github.com/pattyshack/bad/debugger/common"
-	"github.com/pattyshack/bad/debugger/loadedelf"
+	"github.com/pattyshack/bad/debugger/loadedelves"
 	"github.com/pattyshack/bad/debugger/memory"
 	"github.com/pattyshack/bad/debugger/registers"
 	"github.com/pattyshack/bad/debugger/stoppoint"
-	//	"github.com/pattyshack/bad/dwarf"
+	"github.com/pattyshack/bad/elf"
 	"github.com/pattyshack/bad/ptrace"
 )
 
@@ -44,7 +45,7 @@ type Debugger struct {
 
 	CallStack *CallStack
 
-	LoadedElf *loadedelf.Files
+	LoadedElves *loadedelves.Files
 	*SourceFiles
 
 	Pid         int
@@ -52,33 +53,38 @@ type Debugger struct {
 
 	status             *ProcessStatus
 	expectsSyscallExit bool
+
+	entryPointSite       stoppoint.StopSite
+	rendezvousNotifySite stoppoint.StopSite
+	rendezvousAddresses  map[VirtualAddress]struct{}
 }
 
 func newDebugger(tracer *ptrace.Tracer, ownsProcess bool) (*Debugger, error) {
 	regs := registers.New(tracer)
 	mem := memory.New(tracer)
 
-	loadedElfFiles := loadedelf.NewFiles()
+	loadedElves := loadedelves.NewFiles(mem)
 
 	stopSites := stoppoint.NewStopSitePool(regs, mem)
 
 	db := &Debugger{
-		tracer:        tracer,
-		signal:        NewSignaler(tracer.Pid()),
-		VirtualMemory: mem,
-		Registers:     regs,
-		stopSites:     stopSites,
-		StopSiteResolverFactory: stoppoint.NewStopSiteResolverFactory(
-			loadedElfFiles),
-		BreakPoints:        stoppoint.NewBreakPointSet(stopSites),
-		WatchPoints:        stoppoint.NewWatchPointSet(stopSites),
-		SyscallCatchPolicy: catchpoint.NewSyscallCatchPolicy(),
-		Disassembler:       memory.NewDisassembler(mem, stopSites),
-		CallStack:          newCallStack(loadedElfFiles, mem),
-		LoadedElf:          loadedElfFiles,
-		SourceFiles:        NewSourceFiles(),
-		Pid:                tracer.Pid(),
-		ownsProcess:        ownsProcess,
+		tracer:                  tracer,
+		signal:                  NewSignaler(tracer.Pid()),
+		VirtualMemory:           mem,
+		Registers:               regs,
+		stopSites:               stopSites,
+		StopSiteResolverFactory: stoppoint.NewStopSiteResolverFactory(loadedElves),
+		BreakPoints:             stoppoint.NewBreakPointSet(stopSites),
+		WatchPoints:             stoppoint.NewWatchPointSet(stopSites),
+		SyscallCatchPolicy:      catchpoint.NewSyscallCatchPolicy(),
+		Disassembler:            memory.NewDisassembler(mem, stopSites),
+		CallStack:               newCallStack(loadedElves, mem),
+		LoadedElves:             loadedElves,
+		SourceFiles:             NewSourceFiles(),
+		Pid:                     tracer.Pid(),
+		ownsProcess:             ownsProcess,
+		status:                  newRunningStatus(tracer.Pid()),
+		rendezvousAddresses:     map[VirtualAddress]struct{}{},
 	}
 
 	db.signal.ForwardInterruptToProcess()
@@ -88,15 +94,35 @@ func newDebugger(tracer *ptrace.Tracer, ownsProcess bool) (*Debugger, error) {
 		_ = db.Close()
 		return nil, err
 	}
+	// NOTE: This simple status ensures we can Close properly.  We'll supplement
+	// the status with additional detail below.
+	db.status = newSimpleWaitingStatus(db.Pid, waitStatus)
 
 	// NOTE: LoadBinary must be called after wait to avoid procfs data race
 	// (the debugger could read procfs before the process entry point is
 	// written to procfs)
-	_, err = db.LoadedElf.LoadBinary(db.Pid)
+	_, err = db.LoadedElves.LoadBinary(db.Pid)
 	if err != nil {
 		_ = db.Close()
 		return nil, err
 	}
+
+	entryPointSite, err := db.stopSites.Allocate(
+		db.LoadedElves.EntryPoint(),
+		stoppoint.NewBreakSiteType(false))
+	if err != nil {
+		_ = db.Close()
+		return nil, err
+	}
+
+	err = entryPointSite.Enable()
+	if err != nil {
+		_ = db.Close()
+		return nil, err
+	}
+
+	db.entryPointSite = entryPointSite
+	db.rendezvousAddresses[db.LoadedElves.EntryPoint()] = struct{}{}
 
 	if ownsProcess {
 		err = tracer.SetOptions(ptrace.O_EXITKILL | ptrace.O_TRACESYSGOOD)
@@ -108,8 +134,11 @@ func newDebugger(tracer *ptrace.Tracer, ownsProcess bool) (*Debugger, error) {
 		}
 	}
 
-	// NOTE: updateStatus must be called after LoadBinary since the status
-	// extract data from the loaded elf file.
+	// NOTE: when attaching to an existing process, updateStatus should be called
+	// after LoadBinary since the status extract data from the loaded elf file.
+	//
+	// When starting a new child process, it doesn't matter either way since
+	// the child is interrupted before the program entry point.
 	err = db.updateStatus(waitStatus)
 	if err != nil {
 		_ = db.Close()
@@ -359,7 +388,7 @@ func (db *Debugger) StepOut() (*ProcessStatus, error) {
 }
 
 func (db *Debugger) stepUntilDifferentLine(stepOver bool) error {
-	origLine, err := db.LoadedElf.LineEntryAt(db.status.NextInstructionAddress)
+	origLine, err := db.LoadedElves.LineEntryAt(db.status.NextInstructionAddress)
 	if err != nil {
 		return err
 	}
@@ -382,7 +411,7 @@ func (db *Debugger) stepUntilDifferentLine(stepOver bool) error {
 			return nil
 		}
 
-		line, err := db.LoadedElf.LineEntryAt(db.status.NextInstructionAddress)
+		line, err := db.LoadedElves.LineEntryAt(db.status.NextInstructionAddress)
 		if err != nil {
 			return err
 		}
@@ -399,7 +428,7 @@ func (db *Debugger) stepUntilDifferentLine(stepOver bool) error {
 
 func (db *Debugger) maybeStepOverFunctionPrologue() error {
 	pc := db.status.NextInstructionAddress
-	funcEntry, err := db.LoadedElf.FunctionEntryContainingAddress(pc)
+	funcEntry, err := db.LoadedElves.FunctionEntryContainingAddress(pc)
 	if err != nil {
 		return err
 	} else if funcEntry == nil {
@@ -414,14 +443,14 @@ func (db *Debugger) maybeStepOverFunctionPrologue() error {
 	}
 
 	// If the pc is in a function's prologue, advance the pc to the body
-	prologueAddr, err := db.LoadedElf.ToVirtualAddress(
+	prologueAddr, err := db.LoadedElves.ToVirtualAddress(
 		funcEntry.File.File,
 		ars[0].Low)
 	if err != nil {
 		return err
 	}
 
-	prologue, err := db.LoadedElf.LineEntryAt(prologueAddr)
+	prologue, err := db.LoadedElves.LineEntryAt(prologueAddr)
 	if err != nil {
 		return err
 	} else if prologue == nil {
@@ -435,7 +464,7 @@ func (db *Debugger) maybeStepOverFunctionPrologue() error {
 		return fmt.Errorf("body line entry not found")
 	}
 
-	bodyAddr, err := db.LoadedElf.LineEntryToVirtualAddress(body)
+	bodyAddr, err := db.LoadedElves.LineEntryToVirtualAddress(body)
 	if err != nil {
 		return err
 	}
@@ -458,6 +487,7 @@ func (db *Debugger) resumeUntilSignal() error {
 	if err != nil {
 		return fmt.Errorf("failed to resume process %d: %w", db.Pid, err)
 	}
+	db.status = newRunningStatus(db.Pid)
 
 	for {
 		err := db.waitForSignal()
@@ -465,11 +495,21 @@ func (db *Debugger) resumeUntilSignal() error {
 			return fmt.Errorf("failed to resume process %d: %w", db.Pid, err)
 		}
 
-		if !db.status.Stopped ||
-			db.status.StopSignal != syscall.SIGTRAP ||
-			db.status.TrapKind != SyscallTrap ||
-			db.SyscallCatchPolicy.Matches(db.status.SyscallTrapInfo.Id) {
+		if !db.status.Stopped || db.status.StopSignal != syscall.SIGTRAP {
+			return nil
+		}
 
+		switch db.status.TrapKind {
+		case SyscallTrap:
+			if db.SyscallCatchPolicy.Matches(db.status.SyscallTrapInfo.Id) {
+				return nil
+			}
+		case RendezvousTrap:
+			_, err := db.StepInstruction()
+			if err != nil {
+				return fmt.Errorf("failed to resume process %d: %w", db.Pid, err)
+			}
+		default:
 			return nil
 		}
 
@@ -477,6 +517,7 @@ func (db *Debugger) resumeUntilSignal() error {
 		if err != nil {
 			return fmt.Errorf("failed to resume process %d: %w", db.Pid, err)
 		}
+		db.status = newRunningStatus(db.Pid)
 	}
 }
 
@@ -570,8 +611,78 @@ func (db *Debugger) waitForSignal() error {
 	return db.updateStatus(waitStatus)
 }
 
+func (db *Debugger) shouldUpdateSharedLibraries(status *ProcessStatus) bool {
+	if db.LoadedElves.EntryPoint() == status.NextInstructionAddress {
+		return true
+	}
+
+	if db.rendezvousNotifySite != nil &&
+		db.rendezvousNotifySite.Address() == status.NextInstructionAddress {
+
+		return true
+	}
+
+	if !db.ownsProcess && db.rendezvousNotifySite == nil {
+		// When attaching to an existing process, the process' may have already
+		// moved pass its entry point.  In that case, attempt best effort check.
+		symbol := db.LoadedElves.SymbolSpans(status.NextInstructionAddress)
+		return symbol != nil && symbol.Type() == elf.SymbolTypeFunction
+	}
+
+	return false
+}
+
+func (db *Debugger) updateSharedLibraries() error {
+	notifyAddress, modified, err := db.LoadedElves.UpdateFiles()
+	if err != nil {
+		if errors.Is(err, ErrRendezvousAddressNotFound) {
+			return nil
+		}
+		return err
+	}
+
+	if db.rendezvousNotifySite == nil {
+		site, err := db.stopSites.Allocate(
+			notifyAddress,
+			stoppoint.NewBreakSiteType(false))
+		if err != nil {
+			return err
+		}
+
+		err = site.Enable()
+		if err != nil {
+			return err
+		}
+
+		db.rendezvousNotifySite = site
+		db.rendezvousAddresses[notifyAddress] = struct{}{}
+	}
+
+	if modified {
+		err := db.BreakPoints.ResolveStopSites()
+		if err != nil {
+			return err
+		}
+
+		err = db.WatchPoints.ResolveStopSites()
+		if err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
 func (db *Debugger) updateStatus(waitStatus syscall.WaitStatus) error {
-	status, shouldResetProgramCounter, err := newWaitingStatus(db, waitStatus)
+	// NOTE: we will immediately update the db.status with a simple status since
+	// Close needs accurate state to clean up properly.  We'll supplement this
+	// with a detailed status whenever possible, which provide debug information
+	// to the user.
+	db.status = newSimpleWaitingStatus(db.Pid, waitStatus)
+
+	status, shouldResetProgramCounter, err := newDetailedWaitingStatus(
+		db,
+		waitStatus)
 	if err != nil {
 		return fmt.Errorf("failed to wait for process %d: %w", db.Pid, err)
 	}
@@ -588,6 +699,13 @@ func (db *Debugger) updateStatus(waitStatus syscall.WaitStatus) error {
 	}
 
 	if status.Stopped {
+		if db.shouldUpdateSharedLibraries(status) {
+			err = db.updateSharedLibraries()
+			if err != nil {
+				return fmt.Errorf("failed to update shared libs: %w", err)
+			}
+		}
+
 		state, err := db.Registers.GetState()
 		if err != nil {
 			return fmt.Errorf(

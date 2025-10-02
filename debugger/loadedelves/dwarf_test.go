@@ -1,4 +1,4 @@
-package loadedelf
+package loadedelves
 
 import (
 	"encoding/binary"
@@ -24,7 +24,7 @@ func (DwarfSuite) newFile(t *testing.T, path string) *dwarf.File {
 	content, err := os.ReadFile("../test_targets/hello_world")
 	expect.Nil(t, err)
 
-	elfFile, err := elf.ParseBytes(content)
+	elfFile, err := elf.ParseBytes("", content)
 	expect.Nil(t, err)
 
 	file, err := dwarf.NewFile(elfFile)

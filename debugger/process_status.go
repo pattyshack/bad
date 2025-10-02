@@ -3,6 +3,7 @@ package debugger
 import (
 	"bytes"
 	"fmt"
+	"path"
 	"syscall"
 
 	"github.com/pattyshack/bad/debugger/catchpoint"
@@ -123,6 +124,12 @@ func (status ProcessStatus) String() string {
 	}
 }
 
+func newRunningStatus(pid int) *ProcessStatus {
+	return &ProcessStatus{
+		Pid: pid,
+	}
+}
+
 func newInlinedStepInStatus(
 	status *ProcessStatus,
 ) *ProcessStatus {
@@ -136,18 +143,12 @@ func newInlinedStepInStatus(
 	}
 }
 
-// Note: this creates a new ProcessStatus without making any modification to
-// the debugger's internal state.
-func newWaitingStatus(
-	proc *Debugger,
+func newSimpleWaitingStatus(
+	pid int,
 	waitStatus syscall.WaitStatus,
-) (
-	*ProcessStatus,
-	bool, // should reset program counter
-	error,
-) {
-	status := &ProcessStatus{
-		Pid:        proc.Pid,
+) *ProcessStatus {
+	return &ProcessStatus{
+		Pid:        pid,
 		Stopped:    waitStatus.Stopped(),
 		StopSignal: waitStatus.StopSignal(),
 		Signaled:   waitStatus.Signaled(),
@@ -155,6 +156,19 @@ func newWaitingStatus(
 		Exited:     waitStatus.Exited(),
 		ExitStatus: waitStatus.ExitStatus(),
 	}
+}
+
+// Note: this creates a new ProcessStatus without making any modification to
+// the debugger's internal state.
+func newDetailedWaitingStatus(
+	proc *Debugger,
+	waitStatus syscall.WaitStatus,
+) (
+	*ProcessStatus,
+	bool, // should reset program counter
+	error,
+) {
+	status := newSimpleWaitingStatus(proc.Pid, waitStatus)
 
 	if !status.Stopped {
 		return status, false, nil
@@ -195,11 +209,18 @@ func newWaitingStatus(
 		triggered := proc.BreakPoints.Match(siteKeys)
 		triggered = append(triggered, proc.WatchPoints.Match(siteKeys)...)
 		status.StopPoints = triggered
+
+		if status.TrapKind == SoftwareTrap && len(status.StopPoints) == 0 {
+			_, ok := proc.rendezvousAddresses[pc]
+			if ok {
+				status.TrapKind = RendezvousTrap
+			}
+		}
 	}
 
 	status.NextInstructionAddress = pc
 
-	funcEntry, err := proc.LoadedElf.FunctionEntryContainingAddress(pc)
+	funcEntry, err := proc.LoadedElves.FunctionEntryContainingAddress(pc)
 	if err != nil {
 		return nil, false, err
 	}
@@ -209,13 +230,22 @@ func newWaitingStatus(
 		if err != nil {
 			return nil, false, err
 		}
-		status.FunctionName = name
+
+		prefix := ""
+		if funcEntry.CompileUnit.FileName != "" {
+			prefix = path.Base(funcEntry.CompileUnit.FileName) + "|"
+		}
+		status.FunctionName = prefix + name
 	}
 
 	if status.FunctionName == "" {
-		symbol := proc.LoadedElf.SymbolSpans(pc)
+		symbol := proc.LoadedElves.SymbolSpans(pc)
 		if symbol != nil && symbol.Type() == elf.SymbolTypeFunction {
-			status.FunctionName = symbol.PrettyName()
+			prefix := ""
+			if symbol.Parent.File().FileName != "" {
+				prefix = path.Base(symbol.Parent.File().FileName) + "|"
+			}
+			status.FunctionName = prefix + symbol.PrettyName()
 		}
 	}
 

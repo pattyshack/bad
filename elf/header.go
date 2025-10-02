@@ -32,6 +32,7 @@ const (
 	Elf64SectionHeaderEntrySize = 64
 	Elf64ProgramHeaderEntrySize = 56
 	Elf64SymbolEntrySize        = 24
+	Elf64DynamicEntrySize       = 16
 
 	// NOTE: Although Elf64_Nhdr is defined, it looks like elf64 files in general
 	// still encode notes using Elf32_Nhdr.
@@ -502,4 +503,110 @@ type NoteHeader struct {
 	NameSize        uint32
 	DescriptionSize uint32
 	Type            uint32
+}
+
+type DynamicTag int64
+
+// see debug/elf for a more complete list
+const (
+	DynamicTagNull        = DynamicTag(0)  // DT_NULL (ignored)
+	DynamicTagNeeded      = DynamicTag(1)  // DT_NEEDED d_val
+	DynamicTagPltRelSz    = DynamicTag(2)  // DT_PLTRELSZ d_val
+	DynamicTagPltGot      = DynamicTag(3)  // DT_PLTRELSZ d_ptr
+	DynamicTagHash        = DynamicTag(4)  // DT_HASH d_ptr
+	DynamicTagStrTab      = DynamicTag(5)  // DT_STRTAB d_ptr
+	DynamicTagSymTab      = DynamicTag(6)  // DT_SYMTAB d_ptr
+	DynamicTagRela        = DynamicTag(7)  // DT_RELA d_ptr
+	DynamicTagRelaSz      = DynamicTag(8)  // DT_RELASZ d_val
+	DynamicTagRelaEnt     = DynamicTag(9)  // DT_RELAENT d_val
+	DynamicTagStrSz       = DynamicTag(10) // DT_STRSZ d_val
+	DynamicTagSymEnt      = DynamicTag(11) // DT_SYMENT d_val
+	DynamicTagInit        = DynamicTag(12) // DT_INIT d_ptr
+	DynamicTagFini        = DynamicTag(13) // DT_FINI d_ptr
+	DynamicTagSOName      = DynamicTag(14) // DT_SONAME d_val
+	DynamicTagRPath       = DynamicTag(15) // DT_RPATH d_val
+	DynamicTagSymbolic    = DynamicTag(16) // DT_SYMBOLIC (ignored)
+	DynamicTagRel         = DynamicTag(17) // DT_REL d_ptr
+	DynamicTagRelSz       = DynamicTag(18) // DT_RELSZ d_val
+	DynamicTagRelEnt      = DynamicTag(19) // DT_RELENT d_val
+	DynamicTagPltRel      = DynamicTag(20) // DT_PLTREL d_val
+	DynamicTagDebug       = DynamicTag(21) // DT_DEBUG d_ptr
+	DynamicTagTextRel     = DynamicTag(22) // DT_TEXTREL (ignored)
+	DynamicTagJmpRel      = DynamicTag(23) // DT_JMPREL  d_ptr
+	DynamicTagBindNow     = DynamicTag(24) // DT_JMPREL  (ignored)
+	DynamicTagInitArray   = DynamicTag(25) // DT_INIT_ARRAY d_ptr
+	DynamicTagFiniArray   = DynamicTag(26) // DT_FINI_ARRAY d_ptr
+	DynamicTagInitArraySz = DynamicTag(27) // DT_INIT_ARRAYSZ d_val
+	DynamicTagFiniArraySz = DynamicTag(28) // DT_FINI_ARRAYSZ d_val
+)
+
+func (tag DynamicTag) String() string {
+	switch tag {
+	case DynamicTagNull:
+		return "Null"
+	case DynamicTagNeeded:
+		return "Needed"
+	case DynamicTagPltRelSz:
+		return "PltRelSz"
+	case DynamicTagPltGot:
+		return "PltGot"
+	case DynamicTagHash:
+		return "Hash"
+	case DynamicTagStrTab:
+		return "StrTab"
+	case DynamicTagSymTab:
+		return "SymTab"
+	case DynamicTagRela:
+		return "Rela"
+	case DynamicTagRelaSz:
+		return "RelaSz"
+	case DynamicTagRelaEnt:
+		return "RelaEnt"
+	case DynamicTagStrSz:
+		return "StrSz"
+	case DynamicTagSymEnt:
+		return "SymEnt"
+	case DynamicTagInit:
+		return "Init"
+	case DynamicTagFini:
+		return "Fini"
+	case DynamicTagSOName:
+		return "SOName"
+	case DynamicTagRPath:
+		return "RPath"
+	case DynamicTagSymbolic:
+		return "Symbolic"
+	case DynamicTagRel:
+		return "Rel"
+	case DynamicTagRelSz:
+		return "RelSz"
+	case DynamicTagRelEnt:
+		return "RelEnt"
+	case DynamicTagPltRel:
+		return "PltRel"
+	case DynamicTagDebug:
+		return "Debug"
+	case DynamicTagTextRel:
+		return "TextRel"
+	case DynamicTagJmpRel:
+		return "JmpRel"
+	case DynamicTagBindNow:
+		return "BindNow"
+	case DynamicTagInitArray:
+		return "InitArray"
+	case DynamicTagFiniArray:
+		return "FiniArray"
+	case DynamicTagInitArraySz:
+		return "InitArraySz"
+	case DynamicTagFiniArraySz:
+		return "FiniArraySz"
+	default:
+		return fmt.Sprintf("DynamicTagUnknown(%d)", tag)
+	}
+}
+
+// Elf64_Dyn
+type DynamicEntry struct {
+	DynamicTag            // d_tag (Note that Elf64_Sxword is int64, not uint64)
+	ValueOrAddress uint64 // d_un union { Elf64_Xword d_val; Elf64_Addr d_ptr; }
 }

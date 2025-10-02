@@ -13,12 +13,13 @@ func main() {
 		os.Exit(1)
 	}
 
-	content, err := os.ReadFile(os.Args[1])
+	fileName := os.Args[1]
+	content, err := os.ReadFile(fileName)
 	if err != nil {
 		panic(err)
 	}
 
-	file, err := elf.ParseBytes(content)
+	file, err := elf.ParseBytes(fileName, content)
 	if err != nil {
 		panic(err)
 	}

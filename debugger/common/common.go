@@ -5,8 +5,10 @@ import (
 )
 
 var (
-	ErrInvalidArgument = fmt.Errorf("invalid argument")
-	ErrProcessExited   = fmt.Errorf("process exited")
+	ErrInvalidArgument           = fmt.Errorf("invalid argument")
+	ErrProcessExited             = fmt.Errorf("process exited")
+	ErrRendezvousAddressNotFound = fmt.Errorf(
+		"dynamic linker rendezvous address not found")
 )
 
 type TrapKind string
@@ -17,6 +19,9 @@ const (
 	HardwareTrap   = TrapKind("hardware break")
 	SingleStepTrap = TrapKind("single step")
 	SyscallTrap    = TrapKind("syscall trap")
+
+	// A debugger internal software trap that should not be exposed to the user
+	RendezvousTrap = TrapKind("rendezvous trap")
 )
 
 func TrapCodeToKind(code int32) TrapKind {

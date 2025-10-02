@@ -5,7 +5,7 @@ import (
 	"fmt"
 
 	. "github.com/pattyshack/bad/debugger/common"
-	"github.com/pattyshack/bad/debugger/loadedelf"
+	"github.com/pattyshack/bad/debugger/loadedelves"
 	"github.com/pattyshack/bad/debugger/memory"
 	"github.com/pattyshack/bad/debugger/registers"
 	"github.com/pattyshack/bad/dwarf"
@@ -40,7 +40,7 @@ func (frame *CallFrame) IsInlined() bool {
 }
 
 type CallStack struct {
-	loadedElf *loadedelf.Files
+	loadedElves *loadedelves.Files
 
 	memory *memory.VirtualMemory
 
@@ -54,9 +54,12 @@ type CallStack struct {
 	frames []*CallFrame
 }
 
-func newCallStack(files *loadedelf.Files, vm *memory.VirtualMemory) *CallStack {
+func newCallStack(
+	files *loadedelves.Files,
+	vm *memory.VirtualMemory,
+) *CallStack {
 	return &CallStack{
-		loadedElf:      files,
+		loadedElves:    files,
 		memory:         vm,
 		currentPC:      0,
 		executingFrame: 0,
@@ -129,7 +132,7 @@ func (stack *CallStack) populateSourceInfo(status *ProcessStatus) error {
 	} else {
 		// In case pc is not in any function, but still have line info for whatever
 		// reason.
-		entry, err := stack.loadedElf.LineEntryAt(status.NextInstructionAddress)
+		entry, err := stack.loadedElves.LineEntryAt(status.NextInstructionAddress)
 		if err != nil {
 			return err
 		}
@@ -163,7 +166,7 @@ func (stack *CallStack) updateStack(
 			break
 		}
 
-		rules, err := stack.loadedElf.ComputeUnwindRulesAt(pc)
+		rules, err := stack.loadedElves.ComputeUnwindRulesAt(pc)
 		if err != nil {
 			return err
 		}
@@ -206,18 +209,18 @@ func (stack *CallStack) pushCallFrames(
 ) {
 	// NOTE: for unwinded frames, the pc does not point to the start of an
 	// instruction. Look up the line table for the start of the instruction.
-	line, err := stack.loadedElf.LineEntryAt(pc)
+	line, err := stack.loadedElves.LineEntryAt(pc)
 	if err != nil {
 		return false, err
 	}
 	if line != nil {
-		pc, err = stack.loadedElf.LineEntryToVirtualAddress(line)
+		pc, err = stack.loadedElves.LineEntryToVirtualAddress(line)
 		if err != nil {
 			return false, err
 		}
 	}
 
-	die, err := stack.loadedElf.FunctionEntryContainingAddress(pc)
+	die, err := stack.loadedElves.FunctionEntryContainingAddress(pc)
 	if err != nil {
 		return false, err
 	}
@@ -231,7 +234,7 @@ func (stack *CallStack) pushCallFrames(
 		return false, err
 	}
 
-	codeRanges, err := stack.loadedElf.ToVirtualAddressRanges(die)
+	codeRanges, err := stack.loadedElves.ToVirtualAddressRanges(die)
 	if err != nil {
 		return false, err
 	}
@@ -261,7 +264,7 @@ func (stack *CallStack) pushCallFrames(
 				return false, err
 			}
 
-			codeRanges, err := stack.loadedElf.ToVirtualAddressRanges(child)
+			codeRanges, err := stack.loadedElves.ToVirtualAddressRanges(child)
 			if err != nil {
 				return false, err
 			}
@@ -293,7 +296,7 @@ func (stack *CallStack) pushCallFrames(
 		}
 	}
 
-	entry, err := stack.loadedElf.LineEntryAt(pc)
+	entry, err := stack.loadedElves.LineEntryAt(pc)
 	if err != nil {
 		return false, err
 	}

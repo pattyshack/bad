@@ -5,19 +5,19 @@ import (
 	"sort"
 
 	. "github.com/pattyshack/bad/debugger/common"
-	"github.com/pattyshack/bad/debugger/loadedelf"
+	"github.com/pattyshack/bad/debugger/loadedelves"
 	"github.com/pattyshack/bad/dwarf"
 )
 
 type StopSiteResolverFactory struct {
-	loadedElf *loadedelf.Files
+	loadedElves *loadedelves.Files
 }
 
 func NewStopSiteResolverFactory(
-	files *loadedelf.Files,
+	files *loadedelves.Files,
 ) StopSiteResolverFactory {
 	return StopSiteResolverFactory{
-		loadedElf: files,
+		loadedElves: files,
 	}
 }
 
@@ -46,9 +46,9 @@ func (factory StopSiteResolverFactory) NewLineResolver(
 	line int,
 ) StopSiteResolver {
 	return &LineStopSiteResolver{
-		LoadedElf: factory.loadedElf,
-		Path:      path,
-		Line:      line,
+		LoadedElves: factory.loadedElves,
+		Path:        path,
+		Line:        line,
 	}
 }
 
@@ -56,8 +56,8 @@ func (factory StopSiteResolverFactory) NewFunctionResolver(
 	name string,
 ) StopSiteResolver {
 	return &FunctionStopSiteResolver{
-		LoadedElf: factory.loadedElf,
-		Name:      name,
+		LoadedElves: factory.loadedElves,
+		Name:        name,
 	}
 }
 
@@ -82,8 +82,8 @@ func (resolver *AddressStopSiteResolver) ResolveAddresses() (
 }
 
 type FunctionStopSiteResolver struct {
-	LoadedElf *loadedelf.Files
-	Name      string
+	LoadedElves *loadedelves.Files
+	Name        string
 }
 
 func (resolver *FunctionStopSiteResolver) String() string {
@@ -111,7 +111,7 @@ func (resolver *FunctionStopSiteResolver) resolveAddresses() (
 ) {
 	prologueBodies := map[VirtualAddress]VirtualAddress{}
 
-	dwarfInfoEntries, err := resolver.LoadedElf.FunctionEntriesWithName(
+	dwarfInfoEntries, err := resolver.LoadedElves.FunctionEntriesWithName(
 		resolver.Name)
 	if err != nil {
 		return nil, err
@@ -127,7 +127,7 @@ func (resolver *FunctionStopSiteResolver) resolveAddresses() (
 			continue
 		}
 
-		lowPC, err := resolver.LoadedElf.ToVirtualAddress(
+		lowPC, err := resolver.LoadedElves.ToVirtualAddress(
 			info.File.File,
 			addressRanges[0].Low)
 		if err != nil {
@@ -139,7 +139,7 @@ func (resolver *FunctionStopSiteResolver) resolveAddresses() (
 			prologueBodies[lowPC] = lowPC
 		} else {
 			// Extract prologue / body address from dwarf whenever possible
-			prologue, err := resolver.LoadedElf.LineEntryAt(lowPC)
+			prologue, err := resolver.LoadedElves.LineEntryAt(lowPC)
 			if err != nil {
 				return nil, err
 			}
@@ -155,13 +155,13 @@ func (resolver *FunctionStopSiteResolver) resolveAddresses() (
 				return nil, fmt.Errorf("body line entry not found")
 			}
 
-			prologueAddr, err := resolver.LoadedElf.LineEntryToVirtualAddress(
+			prologueAddr, err := resolver.LoadedElves.LineEntryToVirtualAddress(
 				prologue)
 			if err != nil {
 				return nil, err
 			}
 
-			bodyAddr, err := resolver.LoadedElf.LineEntryToVirtualAddress(body)
+			bodyAddr, err := resolver.LoadedElves.LineEntryToVirtualAddress(body)
 			if err != nil {
 				return nil, err
 			}
@@ -171,8 +171,8 @@ func (resolver *FunctionStopSiteResolver) resolveAddresses() (
 	}
 
 	// Fallback to elf symbol for prologue address
-	for _, symbol := range resolver.LoadedElf.SymbolsByName(resolver.Name) {
-		prologueAddr, err := resolver.LoadedElf.SymbolToVirtualAddress(symbol)
+	for _, symbol := range resolver.LoadedElves.SymbolsByName(resolver.Name) {
+		prologueAddr, err := resolver.LoadedElves.SymbolToVirtualAddress(symbol)
 		if err != nil {
 			return nil, err
 		}
@@ -199,9 +199,9 @@ func (resolver *FunctionStopSiteResolver) resolveAddresses() (
 }
 
 type LineStopSiteResolver struct {
-	LoadedElf *loadedelf.Files
-	Path      string
-	Line      int
+	LoadedElves *loadedelves.Files
+	Path        string
+	Line        int
 }
 
 func (resolver *LineStopSiteResolver) String() string {
@@ -227,7 +227,7 @@ func (resolver *LineStopSiteResolver) resolveAddresses() (
 	VirtualAddresses,
 	error,
 ) {
-	lineEntries, err := resolver.LoadedElf.LineEntriesByLine(
+	lineEntries, err := resolver.LoadedElves.LineEntriesByLine(
 		resolver.Path,
 		resolver.Line)
 	if err != nil {
@@ -236,13 +236,13 @@ func (resolver *LineStopSiteResolver) resolveAddresses() (
 
 	result := VirtualAddresses{}
 	for _, lineEntry := range lineEntries {
-		lineAddress, err := resolver.LoadedElf.LineEntryToVirtualAddress(lineEntry)
+		lineAddress, err := resolver.LoadedElves.LineEntryToVirtualAddress(lineEntry)
 		if err != nil {
 			return nil, err
 		}
 
 		// NOTE: funcEntry is the outer most function entry
-		funcEntry, err := resolver.LoadedElf.FunctionEntryContainingAddress(
+		funcEntry, err := resolver.LoadedElves.FunctionEntryContainingAddress(
 			lineAddress)
 		if err != nil {
 			return nil, err
@@ -270,7 +270,7 @@ func (resolver *LineStopSiteResolver) resolveAddresses() (
 				return nil, fmt.Errorf("body line entry not found")
 			}
 
-			lineAddress, err = resolver.LoadedElf.LineEntryToVirtualAddress(
+			lineAddress, err = resolver.LoadedElves.LineEntryToVirtualAddress(
 				lineEntry)
 			if err != nil {
 				return nil, err

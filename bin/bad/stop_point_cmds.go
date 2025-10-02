@@ -141,7 +141,7 @@ func (cmd stopPointCommands) parseAddressesBreakPoint(
 
 	addresses := VirtualAddresses{}
 	for _, arg := range args {
-		address, err := cmd.debugger.LoadedElf.Files[0].ParseAddress(arg)
+		address, err := cmd.debugger.LoadedElves.ParseAddress(arg)
 		if err != nil {
 			return nil, stoppoint.StopSiteType{}, fmt.Errorf(
 				"failed to set watch point: %w",
@@ -251,7 +251,7 @@ func (cmd stopPointCommands) parseWatchPoint(
 		return nil, stoppoint.StopSiteType{}, fmt.Errorf(
 			"failed to set watch point. expected 3 arguments: <addr> <mode> <size>")
 	}
-	addr, err := cmd.debugger.LoadedElf.Files[0].ParseAddress(args[0])
+	addr, err := cmd.debugger.LoadedElves.ParseAddress(args[0])
 	if err != nil {
 		return nil, stoppoint.StopSiteType{}, fmt.Errorf(
 			"failed to set watch point: %w",
