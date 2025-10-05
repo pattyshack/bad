@@ -13,22 +13,22 @@ var (
 )
 
 type Registers struct {
-	tracer *ptrace.Tracer
+	threadTracer *ptrace.Tracer
 }
 
 func New(tracer *ptrace.Tracer) *Registers {
 	return &Registers{
-		tracer: tracer,
+		threadTracer: tracer,
 	}
 }
 
 func (registers *Registers) GetState() (State, error) {
-	gpr, err := registers.tracer.GetGeneralRegisters()
+	gpr, err := registers.threadTracer.GetGeneralRegisters()
 	if err != nil {
 		return State{}, err
 	}
 
-	fpr, err := registers.tracer.GetFloatingPointRegisters()
+	fpr, err := registers.threadTracer.GetFloatingPointRegisters()
 	if err != nil {
 		return State{}, err
 	}
@@ -40,7 +40,7 @@ func (registers *Registers) GetState() (State, error) {
 
 	for idx, _ := range state.dr {
 		offset := userDebugRegistersOffset + uintptr(idx*8)
-		value, err := registers.tracer.PeekUserArea(offset)
+		value, err := registers.threadTracer.PeekUserArea(offset)
 		if err != nil {
 			return State{}, err
 		}
@@ -55,12 +55,12 @@ func (registers *Registers) SetState(state State) error {
 		return fmt.Errorf("cannot set register state with undefined values")
 	}
 
-	err := registers.tracer.SetGeneralRegisters(&state.gpr)
+	err := registers.threadTracer.SetGeneralRegisters(&state.gpr)
 	if err != nil {
 		return err
 	}
 
-	err = registers.tracer.SetFloatingPointRegisters(&state.fpr)
+	err = registers.threadTracer.SetFloatingPointRegisters(&state.fpr)
 	if err != nil {
 		return err
 	}
@@ -73,7 +73,7 @@ func (registers *Registers) SetState(state State) error {
 		}
 
 		offset := userDebugRegistersOffset + uintptr(idx*8)
-		err := registers.tracer.PokeUserArea(offset, value)
+		err := registers.threadTracer.PokeUserArea(offset, value)
 		if err != nil {
 			return fmt.Errorf("failed to set dr%d: %w", idx, err)
 		}

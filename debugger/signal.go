@@ -8,6 +8,12 @@ import (
 	"syscall"
 )
 
+const (
+	// __WALL (Linux specific option). Wait for all children, regardless of type
+	// ("clone" or "non-clone")
+	WaitForAllChildren = 0x40000000
+)
+
 type Signaler struct {
 	pid int
 
@@ -72,19 +78,40 @@ func (signaler *Signaler) StopToProcess() error {
 	return signaler.ToProcess(syscall.SIGSTOP)
 }
 
+func (signaler *Signaler) StopToThread(tid int) error {
+	return syscall.Tgkill(signaler.pid, tid, syscall.SIGSTOP)
+}
+
 func (signaler *Signaler) KillToProcess() error {
 	return signaler.ToProcess(syscall.SIGKILL)
 }
 
-func (signaler *Signaler) FromProcess() (syscall.WaitStatus, error) {
+func (signaler *Signaler) FromProcessThreads() (
+	int,
+	syscall.WaitStatus,
+	error,
+) {
 	// NOTE: golang does not support waitpid
 	var waitStatus syscall.WaitStatus
-	_, err := syscall.Wait4(signaler.pid, &waitStatus, 0, nil)
+
+	// NOTE: -pid indicate any child in the pid's process group
+	tid, err := syscall.Wait4(-signaler.pid, &waitStatus, WaitForAllChildren, nil)
 	if err != nil {
-		return 0, fmt.Errorf(
+		return 0, 0, fmt.Errorf(
 			"failed to wait for process %d: %w",
 			signaler.pid,
 			err)
+	}
+
+	return tid, waitStatus, nil
+}
+
+func (signaler *Signaler) FromThread(tid int) (syscall.WaitStatus, error) {
+	// NOTE: golang does not support waitpid
+	var waitStatus syscall.WaitStatus
+	_, err := syscall.Wait4(tid, &waitStatus, 0, nil)
+	if err != nil {
+		return 0, fmt.Errorf("failed to wait for thread %d: %w", tid, err)
 	}
 
 	return waitStatus, nil

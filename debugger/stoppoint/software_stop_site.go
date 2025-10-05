@@ -129,6 +129,10 @@ func (pool *softwareStopSitePool) ListTriggered(
 	return pc, nil, nil
 }
 
+func (softwareStopSitePool) RefreshSites() error {
+	return nil
+}
+
 type softwareStopSite struct {
 	pool *softwareStopSitePool
 

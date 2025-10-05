@@ -59,7 +59,7 @@ func printRegisters(
 }
 
 func readRegister(db *debugger.Debugger, args []string) error {
-	state, err := db.Registers.GetState()
+	state, err := db.CurrentThread().Registers.GetState()
 	if err != nil {
 		return err
 	}
@@ -92,7 +92,7 @@ func writeRegister(db *debugger.Debugger, args []string) error {
 		return nil
 	}
 
-	state, err := db.Registers.GetState()
+	state, err := db.CurrentThread().Registers.GetState()
 	if err != nil {
 		return err
 	}
@@ -103,5 +103,5 @@ func writeRegister(db *debugger.Debugger, args []string) error {
 		return nil
 	}
 
-	return db.Registers.SetState(state)
+	return db.CurrentThread().Registers.SetState(state)
 }

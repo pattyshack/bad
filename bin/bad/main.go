@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	_ "net/http/pprof"
+	"strconv"
 	"strings"
 
 	"github.com/chzyer/readline"
@@ -75,6 +76,19 @@ func (f runCmd) run(args []string) error {
 }
 
 func initializeCommands(debugger *debugger.Debugger) command {
+	threadCmds := subCommands{
+		{
+			name:        "list",
+			description: "          - list all threads",
+			command:     newFuncCmd(debugger, listThreads),
+		},
+		{
+			name:        "select ",
+			description: " <tid> - list all threads",
+			command:     newFuncCmd(debugger, setThread),
+		},
+	}
+
 	registerCmds := subCommands{
 		{
 			name: "read",
@@ -133,9 +147,13 @@ func initializeCommands(debugger *debugger.Debugger) command {
 
 	return subCommands{
 		{
-			name:        "continue",
-			description: " - resume the process",
-			command:     newFuncCmd(debugger, resume),
+			name: "continue",
+			description: ":\n" +
+				"    continue\n" +
+				"      - resume all process threads\n" +
+				"    continue current\n" +
+				"      - resume only the current thread",
+			command: newFuncCmd(debugger, resume),
 		},
 		{
 			name:        "next",
@@ -210,6 +228,11 @@ func initializeCommands(debugger *debugger.Debugger) command {
 			description: " - print loaded elves",
 			command:     newFuncCmd(debugger, printElves),
 		},
+		{
+			name:        "thread",
+			description: " - commands for operating on threads",
+			command:     threadCmds,
+		},
 	}
 }
 
@@ -220,7 +243,12 @@ func (noOpCmd) run(db *debugger.Debugger, args []string) error {
 }
 
 func resume(db *debugger.Debugger, args []string) error {
-	status, err := db.ResumeUntilSignal()
+	resume := db.ResumeAllUntilSignal
+	if len(args) > 0 && strings.HasPrefix("current", args[0]) {
+		resume = db.ResumeCurrentUntilSignal
+	}
+
+	status, err := resume()
 	if err != nil {
 		if errors.Is(err, ErrProcessExited) {
 			fmt.Println("cannot resume. process", db.Pid, "exited")
@@ -229,7 +257,7 @@ func resume(db *debugger.Debugger, args []string) error {
 		return err
 	}
 
-	printProcessStatus(db, status)
+	printThreadStatus(db, status)
 	return nil
 }
 
@@ -243,7 +271,7 @@ func stepOut(db *debugger.Debugger, args []string) error {
 		return err
 	}
 
-	printProcessStatus(db, status)
+	printThreadStatus(db, status)
 	return nil
 }
 
@@ -257,7 +285,7 @@ func stepOver(db *debugger.Debugger, args []string) error {
 		return err
 	}
 
-	printProcessStatus(db, status)
+	printThreadStatus(db, status)
 	return nil
 }
 
@@ -271,7 +299,7 @@ func stepIn(db *debugger.Debugger, args []string) error {
 		return err
 	}
 
-	printProcessStatus(db, status)
+	printThreadStatus(db, status)
 	return nil
 }
 
@@ -285,8 +313,60 @@ func stepInstruction(db *debugger.Debugger, args []string) error {
 		return err
 	}
 
-	printProcessStatus(db, status)
+	printThreadStatus(db, status)
 	return nil
+}
+
+func listThreads(db *debugger.Debugger, args []string) error {
+	current, threads := db.ListThreads()
+	for _, thread := range threads {
+		prefix := " "
+		if thread == current {
+			prefix = "*"
+		}
+
+		for idx, line := range strings.Split(thread.Status().String(), "\n") {
+			if idx == 0 {
+				fmt.Println(prefix, line)
+			} else {
+				fmt.Println("   ", line)
+			}
+		}
+		fmt.Println()
+	}
+
+	return nil
+}
+
+func setThread(db *debugger.Debugger, args []string) error {
+	if len(args) != 1 {
+		fmt.Println("Invalid argument(s). Expected <tid>")
+		return nil
+	}
+
+	tid, err := strconv.ParseInt(args[0], 10, 32)
+	if err != nil {
+		fmt.Println("Invalid tid:", err)
+		return nil
+	}
+
+	err = db.SetCurrentThread(int(tid))
+	if err != nil && errors.Is(err, ErrInvalidArgument) {
+		fmt.Println(err)
+		return nil
+	}
+
+	return err
+}
+
+func printThreadLifeCycle(status *debugger.ThreadStatus) {
+	if status.Running() || status.Stopped {
+		fmt.Println("Thread", status.Tid, "created")
+	} else if status.Exited {
+		fmt.Println("Thread", status.Tid, "exited")
+	} else { // Signaled (aka Terminated)
+		fmt.Println("Thread", status.Tid, "terminated")
+	}
 }
 
 func main() {
@@ -335,6 +415,8 @@ func main() {
 			panic(err)
 		}
 	}()
+
+	db.WatchThreadLifeCycle(printThreadLifeCycle)
 
 	topCmds := initializeCommands(db)
 

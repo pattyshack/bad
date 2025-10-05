@@ -6,9 +6,8 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"sort"
 	"syscall"
-
-	"golang.org/x/arch/x86/x86asm"
 
 	"github.com/pattyshack/bad/debugger/catchpoint"
 	. "github.com/pattyshack/bad/debugger/common"
@@ -17,20 +16,22 @@ import (
 	"github.com/pattyshack/bad/debugger/registers"
 	"github.com/pattyshack/bad/debugger/stoppoint"
 	"github.com/pattyshack/bad/elf"
+	"github.com/pattyshack/bad/procfs"
 	"github.com/pattyshack/bad/ptrace"
 )
 
-const (
-	syscallTrapSignal = syscall.SIGTRAP | 0x80
-)
-
 type Debugger struct {
-	tracer *ptrace.Tracer
+	Pid           int
+	ownsProcess   bool
+	processTracer *ptrace.Tracer
 
 	signal *Signaler
 
+	LoadedElves *loadedelves.Files
+	*SourceFiles
+
 	VirtualMemory *memory.VirtualMemory
-	Registers     *registers.Registers
+	*memory.Disassembler
 
 	stopSites stoppoint.StopSitePool
 
@@ -41,111 +42,14 @@ type Debugger struct {
 
 	SyscallCatchPolicy *catchpoint.SyscallCatchPolicy
 
-	*memory.Disassembler
-
-	CallStack *CallStack
-
-	LoadedElves *loadedelves.Files
-	*SourceFiles
-
-	Pid         int
-	ownsProcess bool
-
-	status             *ProcessStatus
-	expectsSyscallExit bool
-
 	entryPointSite       stoppoint.StopSite
 	rendezvousNotifySite stoppoint.StopSite
 	rendezvousAddresses  map[VirtualAddress]struct{}
-}
 
-func newDebugger(tracer *ptrace.Tracer, ownsProcess bool) (*Debugger, error) {
-	regs := registers.New(tracer)
-	mem := memory.New(tracer)
+	currentTid int
+	threads    map[int]*ThreadState
 
-	loadedElves := loadedelves.NewFiles(mem)
-
-	stopSites := stoppoint.NewStopSitePool(regs, mem)
-
-	db := &Debugger{
-		tracer:                  tracer,
-		signal:                  NewSignaler(tracer.Pid()),
-		VirtualMemory:           mem,
-		Registers:               regs,
-		stopSites:               stopSites,
-		StopSiteResolverFactory: stoppoint.NewStopSiteResolverFactory(loadedElves),
-		BreakPoints:             stoppoint.NewBreakPointSet(stopSites),
-		WatchPoints:             stoppoint.NewWatchPointSet(stopSites),
-		SyscallCatchPolicy:      catchpoint.NewSyscallCatchPolicy(),
-		Disassembler:            memory.NewDisassembler(mem, stopSites),
-		CallStack:               newCallStack(loadedElves, mem),
-		LoadedElves:             loadedElves,
-		SourceFiles:             NewSourceFiles(),
-		Pid:                     tracer.Pid(),
-		ownsProcess:             ownsProcess,
-		status:                  newRunningStatus(tracer.Pid()),
-		rendezvousAddresses:     map[VirtualAddress]struct{}{},
-	}
-
-	db.signal.ForwardInterruptToProcess()
-
-	waitStatus, err := db.signal.FromProcess()
-	if err != nil {
-		_ = db.Close()
-		return nil, err
-	}
-	// NOTE: This simple status ensures we can Close properly.  We'll supplement
-	// the status with additional detail below.
-	db.status = newSimpleWaitingStatus(db.Pid, waitStatus)
-
-	// NOTE: LoadBinary must be called after wait to avoid procfs data race
-	// (the debugger could read procfs before the process entry point is
-	// written to procfs)
-	_, err = db.LoadedElves.LoadBinary(db.Pid)
-	if err != nil {
-		_ = db.Close()
-		return nil, err
-	}
-
-	entryPointSite, err := db.stopSites.Allocate(
-		db.LoadedElves.EntryPoint(),
-		stoppoint.NewBreakSiteType(false))
-	if err != nil {
-		_ = db.Close()
-		return nil, err
-	}
-
-	err = entryPointSite.Enable()
-	if err != nil {
-		_ = db.Close()
-		return nil, err
-	}
-
-	db.entryPointSite = entryPointSite
-	db.rendezvousAddresses[db.LoadedElves.EntryPoint()] = struct{}{}
-
-	if ownsProcess {
-		err = tracer.SetOptions(ptrace.O_EXITKILL | ptrace.O_TRACESYSGOOD)
-		if err != nil {
-			_ = db.Close()
-			return nil, fmt.Errorf(
-				"failed to set PTRACE_O_EXITKILL on process %d",
-				tracer.Pid())
-		}
-	}
-
-	// NOTE: when attaching to an existing process, updateStatus should be called
-	// after LoadBinary since the status extract data from the loaded elf file.
-	//
-	// When starting a new child process, it doesn't matter either way since
-	// the child is interrupted before the program entry point.
-	err = db.updateStatus(waitStatus)
-	if err != nil {
-		_ = db.Close()
-		return nil, err
-	}
-
-	return db, nil
+	threadLifeCycleWatchers []func(*ThreadStatus)
 }
 
 func AttachTo(pid int) (*Debugger, error) {
@@ -174,173 +78,419 @@ func StartCmdAndAttachTo(name string, args ...string) (*Debugger, error) {
 	return StartAndAttachTo(cmd)
 }
 
-func (db *Debugger) Status() *ProcessStatus {
-	return db.status
-}
+func newDebugger(
+	processTracer *ptrace.Tracer,
+	ownsProcess bool,
+) (
+	*Debugger,
+	error,
+) {
+	mem := memory.New(processTracer)
+	loadedElves := loadedelves.NewFiles(mem)
 
-func (db *Debugger) ResumeUntilSignal() (*ProcessStatus, error) {
-	if db.status.Exited {
-		return nil, fmt.Errorf(
-			"failed to resume process %d: %w",
-			db.Pid,
-			ErrProcessExited)
+	db := &Debugger{
+		Pid:                     processTracer.Pid,
+		ownsProcess:             ownsProcess,
+		processTracer:           processTracer,
+		signal:                  NewSignaler(processTracer.Pid),
+		LoadedElves:             loadedElves,
+		SourceFiles:             NewSourceFiles(),
+		VirtualMemory:           mem,
+		StopSiteResolverFactory: stoppoint.NewStopSiteResolverFactory(loadedElves),
+		SyscallCatchPolicy:      catchpoint.NewSyscallCatchPolicy(),
+		rendezvousAddresses:     map[VirtualAddress]struct{}{},
+		currentTid:              processTracer.Pid,
+		threads:                 map[int]*ThreadState{},
 	}
 
-	enabledSites := db.stopSites.GetEnabledAt(db.status.NextInstructionAddress)
-	if len(enabledSites) > 0 {
-		_, err := db.StepInstruction()
+	stopSites := stoppoint.NewStopSitePool(db)
+
+	db.stopSites = stopSites
+	db.BreakPoints = stoppoint.NewBreakPointSet(stopSites)
+	db.WatchPoints = stoppoint.NewWatchPointSet(stopSites)
+	db.Disassembler = memory.NewDisassembler(mem, stopSites)
+
+	if !ownsProcess {
+		// Sig stop the process to prevent threads creation / termination while
+		// setting up thread states.
+		err := db.signal.StopToProcess()
 		if err != nil {
-			return nil, fmt.Errorf("failed to resume process %d: %w", db.Pid, err)
+			return nil, fmt.Errorf("failed to stop process %d: %w", db.Pid, err)
 		}
 	}
 
-	err := db.resumeUntilSignal()
+	mainWaitStatus, err := db.signal.FromThread(db.Pid)
+	if err != nil {
+		_ = processTracer.Close()
+		return nil, fmt.Errorf(
+			"failed to wait for main thread %d: %w",
+			db.Pid,
+			err)
+	}
+
+	// LoadBinary must be called after main thread stopped to avoid procfs
+	// data race (the debugger could read procfs before the process entry point
+	// address is written to procfs)
+	_, err = db.LoadedElves.LoadExecutable(db.Pid)
+	if err != nil {
+		_ = db.Close()
+		return nil, err
+	}
+
+	// Any thread created prior to this point (including the main thread)
+	// should be listed in procfs and must be explicitly ptrace attached.
+	existingTids, err := procfs.ListTasks(db.Pid)
+	if err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf(
+			"failed to list running threads for process %d: %w",
+			db.Pid,
+			err)
+	}
+
+	options := ptrace.O_TRACESYSGOOD | ptrace.O_TRACECLONE
+	if ownsProcess {
+		options |= ptrace.O_EXITKILL
+	}
+
+	for _, tid := range existingTids {
+		var threadTracer *ptrace.Tracer
+		var waitStatus syscall.WaitStatus
+		var err error
+		if tid == db.Pid {
+			threadTracer = processTracer.TraceThread(db.Pid)
+			waitStatus = mainWaitStatus
+		} else {
+			// NOTE: threads created prior to ptrace attaching to the main thread
+			// are treated as independent tasks, and must be manually attached.
+			threadTracer, err = ptrace.AttachToProcess(tid)
+			if err != nil {
+				_ = db.Close()
+				return nil, fmt.Errorf(
+					"failed to ptrace attach to thread %d: %w",
+					tid,
+					err)
+			}
+
+			waitStatus, err = db.signal.FromThread(tid)
+			if err != nil {
+				_ = threadTracer.Close()
+				_ = db.Close()
+				return nil, fmt.Errorf(
+					"failed to wait for thread %d: %w",
+					tid,
+					err)
+			}
+		}
+
+		thread, err := db.addThread(tid, threadTracer, waitStatus)
+		if err != nil {
+			_ = db.Close()
+			return nil, err
+		}
+
+		// We need to account for the above explicit sig stop
+		thread.hasPendingSigStop = !ownsProcess
+
+		err = threadTracer.SetOptions(options)
+		if err != nil {
+			_ = db.Close()
+			return nil, fmt.Errorf(
+				"failed to set ptrace options for process %d: %w",
+				processTracer.Pid,
+				err)
+		}
+	}
+
+	db.signal.ForwardInterruptToProcess()
+
+	entryPointSite, err := db.stopSites.Allocate(
+		db.LoadedElves.EntryPoint(),
+		stoppoint.NewBreakSiteType(false))
+	if err != nil {
+		_ = db.Close()
+		return nil, err
+	}
+
+	err = entryPointSite.Enable()
+	if err != nil {
+		_ = db.Close()
+		return nil, err
+	}
+
+	db.entryPointSite = entryPointSite
+	db.rendezvousAddresses[db.LoadedElves.EntryPoint()] = struct{}{}
+
+	return db, nil
+}
+
+func (db *Debugger) Close() error {
+	defer func() {
+		_ = db.signal.Close()
+		_ = db.processTracer.Close()
+	}()
+
+	if db.MainThread().status.Running() {
+		err := db.signal.StopToProcess()
+		if err != nil {
+			return err
+		}
+
+		_, err = db.signal.FromThread(db.Pid)
+		if err != nil {
+			return err
+		}
+	}
+
+	if db.MainThread().status.Exited {
+		return nil
+	}
+
+	err := db.processTracer.Detach()
+	if err != nil {
+		return err
+	}
+
+	err = db.signal.ContinueToProcess()
+	if err != nil {
+		return err
+	}
+
+	if db.ownsProcess {
+		err = db.signal.KillToProcess()
+		if err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+func (db *Debugger) ListThreads() (*ThreadState, []*ThreadState) {
+	threads := []*ThreadState{}
+	for _, thread := range db.threads {
+		threads = append(threads, thread)
+	}
+
+	sort.Slice(
+		threads,
+		func(i int, j int) bool {
+			return threads[i].Tid < threads[j].Tid
+		})
+
+	return db.CurrentThread(), threads
+}
+
+func (db *Debugger) SetCurrentThread(tid int) error {
+	_, ok := db.threads[tid]
+	if !ok {
+		return fmt.Errorf("%w. no such thread", ErrInvalidArgument)
+	}
+
+	db.currentTid = tid
+	return nil
+}
+
+func (db *Debugger) CurrentThread() *ThreadState {
+	return db.threads[db.currentTid]
+}
+
+func (db *Debugger) MainThread() *ThreadState {
+	return db.threads[db.Pid]
+}
+
+func (db *Debugger) WatchThreadLifeCycle(notify func(*ThreadStatus)) {
+	db.threadLifeCycleWatchers = append(db.threadLifeCycleWatchers, notify)
+}
+
+func (db *Debugger) Memory() *memory.VirtualMemory {
+	return db.VirtualMemory
+}
+
+func (db *Debugger) AllRegisters() []*registers.Registers {
+	all := []*registers.Registers{}
+	for _, thread := range db.threads {
+		if thread.status.Exited || thread.status.Signaled {
+			continue
+		}
+
+		all = append(all, thread.Registers)
+	}
+	return all
+}
+
+func (db *Debugger) ResumeCurrentUntilSignal() (*ThreadStatus, error) {
+	thread := db.CurrentThread()
+	if db.MainThread().status.Exited {
+		return nil, fmt.Errorf(
+			"failed to resume thread %d: %w",
+			thread.Tid,
+			ErrProcessExited)
+	}
+
+	err := thread.maybeBypassCurrentPCBreakSite()
 	if err != nil {
 		return nil, err
 	}
 
-	return db.status, nil
+	// Note that the current thread may have been updated by resumeUntilSignal.
+	status, err := db.resumeUntilSignal(thread)
+	if err != nil {
+		return nil, err
+	}
+
+	return status, nil
 }
 
-func (db *Debugger) StepInstruction() (*ProcessStatus, error) {
-	if db.status.Exited {
+func (db *Debugger) ResumeAllUntilSignal() (*ThreadStatus, error) {
+	if db.MainThread().status.Exited {
+		return nil, fmt.Errorf("failed to resume all threads: %w", ErrProcessExited)
+	}
+
+	// Ensure all threads have advance by at least one instruction
+	for _, thread := range db.threads {
+		err := thread.maybeBypassCurrentPCBreakSite()
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	// Note that the current thread may have been updated by resumeUntilSignal.
+	status, err := db.resumeUntilSignal(nil)
+	if err != nil {
+		return nil, err
+	}
+
+	return status, nil
+}
+
+func (db *Debugger) StepInstruction() (*ThreadStatus, error) {
+	thread := db.CurrentThread()
+	if db.MainThread().status.Exited {
 		return nil, fmt.Errorf(
-			"failed to step instruction for process %d: %w",
-			db.Pid,
+			"failed to step instruction for thread %d: %w",
+			thread.Tid,
 			ErrProcessExited)
 	}
 
-	enabledSites := db.stopSites.GetEnabledAt(db.status.NextInstructionAddress)
-	err := enabledSites.Disable()
+	err := thread.maybeSwallowInternalSigStop()
 	if err != nil {
-		return nil, fmt.Errorf(
-			"failed to step instruction for process %d: %w",
-			db.Pid,
-			err)
+		return nil, err
 	}
 
-	err = db.stepInstruction(false)
+	err = thread.stepInstruction(true, false)
 	if err != nil {
-		return nil, fmt.Errorf(
-			"failed to step instruction for process %d: %w",
-			db.Pid,
-			err)
+		return nil, err
 	}
 
-	err = enabledSites.Enable()
-	if err != nil {
-		return nil, fmt.Errorf(
-			"failed to step instruction for process %d: %w",
-			db.Pid,
-			err)
+	reportStatus := db.focusOnImportantStatus(thread, nil)
+	if reportStatus != nil {
+		return reportStatus, nil
 	}
 
-	return db.status, nil
+	return thread.status, nil
 }
 
-func (db *Debugger) StepIn() (*ProcessStatus, error) {
-	if db.status.Exited {
+func (db *Debugger) StepIn() (*ThreadStatus, error) {
+	thread := db.CurrentThread()
+	if db.MainThread().status.Exited {
 		return nil, fmt.Errorf(
-			"failed to step in for process %d: %w",
-			db.Pid,
+			"failed to step in for thread %d: %w",
+			thread.Tid,
 			ErrProcessExited)
 	}
 
-	inlinedStepInStatus, err := db.CallStack.MaybeStepIntoInlinedFunction(
-		db.status)
+	inlinedStepInStatus, err := thread.CallStack.MaybeStepIntoInlinedFunction(
+		thread.status)
 	if err != nil {
-		return nil, fmt.Errorf("failed to step in for process %d: %w", db.Pid, err)
+		return nil, fmt.Errorf(
+			"failed to step in for thread %d: %w",
+			thread.Tid,
+			err)
 	}
 
 	if inlinedStepInStatus != nil {
-		db.status = inlinedStepInStatus
-		db.expectsSyscallExit = false
-		return db.status, nil
+		thread.status = inlinedStepInStatus
+		thread.expectsSyscallExit = false
+		return thread.status, nil
 	}
 
-	enabledSites := db.stopSites.GetEnabledAt(db.status.NextInstructionAddress)
-	err = enabledSites.Disable()
-	if err != nil {
-		return nil, fmt.Errorf("failed to step in for process %d: %w", db.Pid, err)
-	}
-
-	err = db.stepUntilDifferentLine(false)
+	err = thread.maybeSwallowInternalSigStop()
 	if err != nil {
 		return nil, err
 	}
 
-	err = db.maybeStepOverFunctionPrologue()
+	err = thread.stepUntilDifferentLine(false)
 	if err != nil {
 		return nil, err
 	}
 
-	err = enabledSites.Enable()
+	err = thread.maybeStepOverFunctionPrologue()
 	if err != nil {
-		return nil, fmt.Errorf("failed to step in for process %d: %w", db.Pid, err)
+		return nil, err
 	}
 
-	return db.status, nil
+	reportStatus := db.focusOnImportantStatus(thread, nil)
+	if reportStatus != nil {
+		return reportStatus, nil
+	}
+
+	return thread.status, nil
 }
 
-func (db *Debugger) StepOver() (*ProcessStatus, error) {
-	if db.status.Exited {
+func (db *Debugger) StepOver() (*ThreadStatus, error) {
+	thread := db.CurrentThread()
+	if db.MainThread().status.Exited {
 		return nil, fmt.Errorf(
-			"failed to step over for process %d: %w",
-			db.Pid,
+			"failed to step over for thread %d: %w",
+			thread.Tid,
 			ErrProcessExited)
 	}
 
-	enabledSites := db.stopSites.GetEnabledAt(db.status.NextInstructionAddress)
-	err := enabledSites.Disable()
-	if err != nil {
-		return nil, fmt.Errorf(
-			"failed to step over for process %d: %w",
-			db.Pid,
-			err)
-	}
-
-	err = db.stepUntilDifferentLine(true)
+	err := thread.maybeSwallowInternalSigStop()
 	if err != nil {
 		return nil, err
 	}
 
-	err = enabledSites.Enable()
+	err = thread.stepUntilDifferentLine(true)
 	if err != nil {
-		return nil, fmt.Errorf(
-			"failed to step over for process %d: %w",
-			db.Pid,
-			err)
+		return nil, err
 	}
 
-	return db.status, nil
+	reportStatus := db.focusOnImportantStatus(thread, nil)
+	if reportStatus != nil {
+		return reportStatus, nil
+	}
+
+	return thread.status, nil
 }
 
-func (db *Debugger) StepOut() (*ProcessStatus, error) {
-	if db.status.Exited {
+func (db *Debugger) StepOut() (*ThreadStatus, error) {
+	thread := db.CurrentThread()
+	if db.MainThread().status.Exited {
 		return nil, fmt.Errorf(
-			"failed to step out for process %d: %w",
-			db.Pid,
+			"failed to step out for thread %d: %w",
+			thread.Tid,
 			ErrProcessExited)
 	}
 
-	enabledSites := db.stopSites.GetEnabledAt(db.status.NextInstructionAddress)
-	err := enabledSites.Disable()
+	err := thread.maybeSwallowInternalSigStop()
 	if err != nil {
-		return nil, fmt.Errorf("failed to step out for process %d: %w", db.Pid, err)
+		return nil, err
 	}
 
 	var returnAddress VirtualAddress
-	frame := db.CallStack.CurrentFrame()
+	frame := thread.CallStack.CurrentFrame()
 	if frame != nil && frame.IsInlined() {
 		// XXX: This is not completely correct since the inlined function may
 		// jump to any address, but is good enough for our purpose.
 		returnAddress = frame.CodeRanges[len(frame.CodeRanges)-1].High
 	} else {
-		state, err := db.Registers.GetState()
+		state, err := thread.Registers.GetState()
 		if err != nil {
 			return nil, fmt.Errorf(
-				"failed to step out for process %d: %w",
-				db.Pid,
+				"failed to step out for thread %d: %w",
+				thread.Tid,
 				err)
 		}
 
@@ -351,8 +501,8 @@ func (db *Debugger) StepOut() (*ProcessStatus, error) {
 		n, err := db.VirtualMemory.Read(framePointer+8, addressBytes)
 		if err != nil {
 			return nil, fmt.Errorf(
-				"failed to step out for process %d: %w",
-				db.Pid,
+				"failed to step out for thread %d: %w",
+				thread.Tid,
 				err)
 		}
 		if n != 8 {
@@ -362,8 +512,8 @@ func (db *Debugger) StepOut() (*ProcessStatus, error) {
 		n, err = binary.Decode(addressBytes, binary.LittleEndian, &returnAddress)
 		if err != nil {
 			return nil, fmt.Errorf(
-				"failed to step out for process %d: %w",
-				db.Pid,
+				"failed to step out for thread %d: %w",
+				thread.Tid,
 				err)
 		}
 		if n != 8 {
@@ -371,247 +521,92 @@ func (db *Debugger) StepOut() (*ProcessStatus, error) {
 		}
 	}
 
-	err = db.resumeUntilAddressOrSignal(returnAddress)
+	err = thread.stepInstruction(true, false)
 	if err != nil {
 		return nil, fmt.Errorf(
-			"failed to step out for process %d: %w",
-			db.Pid,
+			"failed to step out for thread %d: %w",
+			thread.Tid,
 			err)
 	}
 
-	err = enabledSites.Enable()
-	if err != nil {
-		return nil, fmt.Errorf("failed to step out for process %d: %w", db.Pid, err)
-	}
+	if thread.status.Stopped &&
+		thread.status.NextInstructionAddress != returnAddress {
 
-	return db.status, nil
-}
-
-func (db *Debugger) stepUntilDifferentLine(stepOver bool) error {
-	origLine, err := db.LoadedElves.LineEntryAt(db.status.NextInstructionAddress)
-	if err != nil {
-		return err
-	}
-
-	for {
-		codeRanges := db.CallStack.UnexecutedInlinedFunctionCodeRanges()
-		if stepOver && len(codeRanges) > 0 {
-			err := db.resumeUntilAddressOrSignal(codeRanges[len(codeRanges)-1].High)
-			if err != nil {
-				return err
-			}
-		} else {
-			err := db.stepInstruction(stepOver)
-			if err != nil {
-				return err
-			}
-		}
-
-		if db.status.TrapKind != SingleStepTrap {
-			return nil
-		}
-
-		line, err := db.LoadedElves.LineEntryAt(db.status.NextInstructionAddress)
+		err = thread.resumeUntilAddressOrSignal(returnAddress)
 		if err != nil {
-			return err
-		}
-
-		if line == nil {
-			return nil
-		} else if origLine == line || line.EndSequence {
-			continue
-		} else {
-			return nil
+			return nil, fmt.Errorf(
+				"failed to step out for thread %d: %w",
+				thread.Tid,
+				err)
 		}
 	}
+
+	reportStatus := db.focusOnImportantStatus(thread, nil)
+	if reportStatus != nil {
+		return reportStatus, nil
+	}
+
+	return thread.status, nil
 }
 
-func (db *Debugger) maybeStepOverFunctionPrologue() error {
-	pc := db.status.NextInstructionAddress
-	funcEntry, err := db.LoadedElves.FunctionEntryContainingAddress(pc)
-	if err != nil {
-		return err
-	} else if funcEntry == nil {
-		return nil
+func (db *Debugger) addThread(
+	tid int,
+	threadTracer *ptrace.Tracer,
+	waitStatus syscall.WaitStatus,
+) (
+	*ThreadState,
+	error,
+) {
+	_, ok := db.threads[tid]
+	if ok {
+		return nil, fmt.Errorf("cannot add thread. thread %d already exist", tid)
 	}
 
-	ars, err := funcEntry.AddressRanges()
+	thread := &ThreadState{
+		Tid:          tid,
+		threadTracer: threadTracer,
+		Registers:    registers.New(threadTracer),
+		CallStack:    newCallStack(db.LoadedElves, db.VirtualMemory),
+		status:       newRunningStatus(tid),
+		Debugger:     db,
+	}
+	db.threads[tid] = thread
+
+	err := thread.updateStatus(waitStatus, true)
 	if err != nil {
-		return err
-	} else if len(ars) == 0 {
-		return nil
+		return nil, err
 	}
 
-	// If the pc is in a function's prologue, advance the pc to the body
-	prologueAddr, err := db.LoadedElves.ToVirtualAddress(
-		funcEntry.File.File,
-		ars[0].Low)
+	for _, notify := range db.threadLifeCycleWatchers {
+		notify(thread.status)
+	}
+
+	return thread, nil
+}
+
+func (db *Debugger) removeThread(tid int) error {
+	thread, ok := db.threads[tid]
+	if !ok {
+		return fmt.Errorf("cannot remove thread %d. no such thread", tid)
+	}
+
+	err := thread.threadTracer.Detach()
 	if err != nil {
 		return err
 	}
 
-	prologue, err := db.LoadedElves.LineEntryAt(prologueAddr)
-	if err != nil {
-		return err
-	} else if prologue == nil {
-		return nil
-	}
+	delete(db.threads, tid)
 
-	body, err := prologue.Next()
-	if err != nil {
-		return err
-	} else if body == nil {
-		return fmt.Errorf("body line entry not found")
-	}
-
-	bodyAddr, err := db.LoadedElves.LineEntryToVirtualAddress(body)
-	if err != nil {
-		return err
-	}
-
-	if prologueAddr <= pc && pc < bodyAddr {
-		err := db.resumeUntilAddressOrSignal(bodyAddr)
-		return err
+	for _, notify := range db.threadLifeCycleWatchers {
+		notify(thread.status)
 	}
 
 	return nil
 }
 
-func (db *Debugger) resumeUntilSignal() error {
-	resume := db.tracer.Resume
-	if db.SyscallCatchPolicy.IsEnabled() {
-		resume = db.tracer.SyscallTrappedResume
-	}
-
-	err := resume(0)
-	if err != nil {
-		return fmt.Errorf("failed to resume process %d: %w", db.Pid, err)
-	}
-	db.status = newRunningStatus(db.Pid)
-
-	for {
-		err := db.waitForSignal()
-		if err != nil {
-			return fmt.Errorf("failed to resume process %d: %w", db.Pid, err)
-		}
-
-		if !db.status.Stopped || db.status.StopSignal != syscall.SIGTRAP {
-			return nil
-		}
-
-		switch db.status.TrapKind {
-		case SyscallTrap:
-			if db.SyscallCatchPolicy.Matches(db.status.SyscallTrapInfo.Id) {
-				return nil
-			}
-		case RendezvousTrap:
-			_, err := db.StepInstruction()
-			if err != nil {
-				return fmt.Errorf("failed to resume process %d: %w", db.Pid, err)
-			}
-		default:
-			return nil
-		}
-
-		err = resume(0)
-		if err != nil {
-			return fmt.Errorf("failed to resume process %d: %w", db.Pid, err)
-		}
-		db.status = newRunningStatus(db.Pid)
-	}
-}
-
-func (db *Debugger) resumeUntilAddressOrSignal(address VirtualAddress) error {
-	site, err := db.stopSites.Allocate(address, stoppoint.NewBreakSiteType(false))
-	if err != nil {
-		return fmt.Errorf("failed to allocate internal break site: %w", err)
-	}
-
-	isInternalOnly := !site.IsEnabled()
-	if isInternalOnly {
-		err = site.Enable()
-		if err != nil {
-			return fmt.Errorf("failed to enable internal break site: %w", err)
-		}
-	}
-
-	err = db.resumeUntilSignal()
-	if err != nil {
-		return fmt.Errorf("failed to resume until address %s: %w", address, err)
-	}
-
-	if isInternalOnly {
-		if db.status.Stopped &&
-			db.status.StopSignal == syscall.SIGTRAP &&
-			db.status.TrapKind == SoftwareTrap &&
-			db.status.NextInstructionAddress == address {
-
-			// Covert status to single step since the internal break site is
-			// the only site enabled at the address. Note that we must clear
-			// matched stop points since there could be user defined stop points
-			// at the address, all of which are disabled.
-			db.status.TrapKind = SingleStepTrap
-			db.status.StopPoints = nil
-		}
-
-		err = site.Disable()
-		if err != nil {
-			return fmt.Errorf("failed to disable internal break site: %w", err)
-		}
-	}
-
-	err = site.Deallocate()
-	if err != nil {
-		return fmt.Errorf("failed to deallocate internal break site: %w", err)
-	}
-
-	return nil
-}
-
-func (db *Debugger) stepInstruction(stepOverCall bool) error {
-	if stepOverCall {
-		instructions, err := db.Disassemble(db.status.NextInstructionAddress, 1)
-		if err != nil {
-			return fmt.Errorf("failed to determine instruction type: %w", err)
-		}
-
-		// NOTE: golang's x86asm package is unable to disassemble all x64
-		// instructions. When that happens, we'll simply assume the instruction is
-		// not a call instruction.
-		if len(instructions) == 1 {
-			inst := instructions[0]
-			if inst.Op == x86asm.CALL {
-				return db.resumeUntilAddressOrSignal(
-					db.status.NextInstructionAddress + VirtualAddress(inst.Len))
-			}
-		}
-	}
-
-	err := db.tracer.SingleStep()
-	if err != nil {
-		return fmt.Errorf("failed to single step: %w", err)
-	}
-
-	err = db.waitForSignal()
-	if err != nil {
-		return fmt.Errorf("failed to wait for step instruction: %w", err)
-	}
-
-	return nil
-}
-
-func (db *Debugger) waitForSignal() error {
-	// NOTE: This returns on all traps, including traps on syscall that we
-	// don't care about.
-	waitStatus, err := db.signal.FromProcess()
-	if err != nil {
-		return err
-	}
-
-	return db.updateStatus(waitStatus)
-}
-
-func (db *Debugger) shouldUpdateSharedLibraries(status *ProcessStatus) bool {
+func (db *Debugger) shouldUpdateSharedLibraries(
+	status *ThreadStatus,
+) bool {
 	if db.LoadedElves.EntryPoint() == status.NextInstructionAddress {
 		return true
 	}
@@ -625,6 +620,20 @@ func (db *Debugger) shouldUpdateSharedLibraries(status *ProcessStatus) bool {
 	if !db.ownsProcess && db.rendezvousNotifySite == nil {
 		// When attaching to an existing process, the process' may have already
 		// moved pass its entry point.  In that case, attempt best effort check.
+
+		_, entries, err := db.LoadedElves.ReadRendezvousInfo()
+		if err == nil {
+			_, ok := entries[loadedelves.VDSOFileName]
+			if ok {
+				return true
+			}
+
+			addr, ok := entries[""] // executable
+			if ok && uint64(addr) == db.LoadedElves.Executable.LoadBias {
+				return true
+			}
+		}
+
 		symbol := db.LoadedElves.SymbolSpans(status.NextInstructionAddress)
 		return symbol != nil && symbol.Type() == elf.SymbolTypeFunction
 	}
@@ -673,111 +682,245 @@ func (db *Debugger) updateSharedLibraries() error {
 	return nil
 }
 
-func (db *Debugger) updateStatus(waitStatus syscall.WaitStatus) error {
-	// NOTE: we will immediately update the db.status with a simple status since
-	// Close needs accurate state to clean up properly.  We'll supplement this
-	// with a detailed status whenever possible, which provide debug information
-	// to the user.
-	db.status = newSimpleWaitingStatus(db.Pid, waitStatus)
-
-	status, shouldResetProgramCounter, err := newDetailedWaitingStatus(
-		db,
-		waitStatus)
-	if err != nil {
-		return fmt.Errorf("failed to wait for process %d: %w", db.Pid, err)
-	}
-
-	if shouldResetProgramCounter {
-		err := db.Registers.SetProgramCounter(status.NextInstructionAddress)
-		if err != nil {
-			return fmt.Errorf(
-				"failed to wait for process %d. "+
-					"cannot reset program counter at break point: %w",
-				db.Pid,
-				err)
+func (db *Debugger) _stopRunningThreads(
+	stopped map[int]syscall.WaitStatus,
+) error {
+	numRunning := 0
+	for tid, thread := range db.threads {
+		if !thread.status.Running() {
+			continue
 		}
-	}
 
-	if status.Stopped {
-		if db.shouldUpdateSharedLibraries(status) {
-			err = db.updateSharedLibraries()
+		_, ok := stopped[tid]
+		if ok {
+			// thread has already stopped, but thread status has not been updated.
+			continue
+		}
+
+		numRunning += 1
+
+		if !thread.hasPendingSigStop && !thread.hasPendingSingleStepTrap {
+			err := db.signal.StopToThread(tid)
 			if err != nil {
-				return fmt.Errorf("failed to update shared libs: %w", err)
+				return err
 			}
-		}
-
-		state, err := db.Registers.GetState()
-		if err != nil {
-			return fmt.Errorf(
-				"failed to update call stack for process %d: %w",
-				db.Pid,
-				err)
-		}
-
-		err = db.CallStack.Update(status, state)
-		if err != nil {
-			return fmt.Errorf(
-				"failed to update call stack for process %d: %w",
-				db.Pid,
-				err)
-		}
-
-		if status.StopSignal == syscall.SIGTRAP {
-			if status.TrapKind == SyscallTrap {
-				db.expectsSyscallExit = !db.expectsSyscallExit
-			} else {
-				// In case syscall catch point got disabled after syscall entry, but
-				// before syscall exit.
-				db.expectsSyscallExit = false
-			}
+			thread.hasPendingSigStop = true
 		}
 	}
 
-	db.status = status
+	for numRunning > 0 {
+		tid, waitStatus, err := db.signal.FromProcessThreads()
+		if err != nil {
+			return err
+		}
+
+		_, ok := stopped[tid]
+		if ok {
+			panic("should never happen")
+		}
+
+		stopped[tid] = waitStatus
+
+		thread, ok := db.threads[tid]
+		if !ok { // new thread
+			continue
+		}
+
+		if !thread.status.Running() {
+			panic("should never happen")
+		}
+
+		numRunning -= 1
+	}
+
 	return nil
 }
 
-func (db *Debugger) Close() error {
-	defer func() {
-		_ = db.signal.Close()
-	}()
+func (db *Debugger) _updateStoppedThreads(
+	stopped map[int]syscall.WaitStatus,
+) (
+	map[int]*ThreadState,
+	error,
+) {
+	shouldRefresh := false
+	stoppedThreads := map[int]*ThreadState{}
+	for tid, waitStatus := range stopped {
+		thread, ok := db.threads[tid]
+		if !ok {
+			var err error
+			thread, err = db.addThread(
+				tid,
+				db.processTracer.TraceThread(tid),
+				waitStatus)
+			if err != nil {
+				return nil, err
+			}
 
-	if db.status.Running() {
-		err := db.signal.StopToProcess()
-		if err != nil {
-			return err
+			shouldRefresh = true
+		} else {
+			err := thread.updateStatus(waitStatus, !ok)
+			if err != nil {
+				return nil, err
+			}
 		}
 
-		err = db.waitForSignal()
-		if err != nil {
-			return err
+		if thread.status.Stopped {
+			stoppedThreads[tid] = thread
+		} else if thread.Tid != thread.Pid {
+			err := db.removeThread(tid)
+			if err != nil {
+				return nil, err
+			}
+
+			shouldRefresh = true
 		}
 	}
 
-	if db.status.Exited { // nothing to detach from
+	if shouldRefresh {
+		err := db.stopSites.RefreshSites()
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	return stoppedThreads, nil
+}
+
+func (db *Debugger) waitForSignalFromAnyThread() (
+	map[int]*ThreadState,
+	error,
+) {
+	tid, waitStatus, err := db.signal.FromProcessThreads()
+	if err != nil {
+		return nil, err
+	}
+
+	stopped := map[int]syscall.WaitStatus{
+		tid: waitStatus,
+	}
+
+	err = db._stopRunningThreads(stopped)
+	if err != nil {
+		return nil, err
+	}
+
+	stoppedThreads, err := db._updateStoppedThreads(stopped)
+	if err != nil {
+		return nil, err
+	}
+
+	return stoppedThreads, err
+}
+
+// Resume all when thread is nil.  Otherwise only resume the specified thread.
+func (db *Debugger) resumeUntilSignal(
+	resumeThread *ThreadState,
+) (
+	*ThreadStatus,
+	error,
+) {
+	resume := func() error {
+		resumeThreads := []*ThreadState{}
+		if resumeThread != nil {
+			resumeThreads = append(resumeThreads, resumeThread)
+		} else {
+			for _, thread := range db.threads {
+				resumeThreads = append(resumeThreads, thread)
+			}
+		}
+
+		// NOTE: all rendezvous must be stepped over before resuming threads since
+		// the resumed threads may accidently bypass temporarily disabled sites.
+		for _, thread := range resumeThreads {
+			if thread.status.TrapKind == RendezvousTrap {
+				err := thread.stepInstruction(true, false)
+				if err != nil {
+					return fmt.Errorf(
+						"failed to resume until signal. "+
+							"cannot step over rendezvous for thread %d: %w",
+						thread.Tid,
+						err)
+				}
+			}
+		}
+
+		for _, thread := range resumeThreads {
+			err := thread.resume()
+			if err != nil {
+				return fmt.Errorf(
+					"failed to resume until signal. cannot resume thread %d: %w",
+					thread.Tid,
+					err)
+			}
+		}
+
 		return nil
 	}
 
-	err := db.tracer.Detach()
-	if err != nil {
-		return err
-	}
-
-	err = db.signal.ContinueToProcess()
-	if err != nil {
-		return err
-	}
-
-	if db.ownsProcess {
-		err = db.signal.KillToProcess()
+	for {
+		err := resume()
 		if err != nil {
-			return err
+			return nil, err
 		}
 
-		err = db.waitForSignal()
+		stoppedThreads, err := db.waitForSignalFromAnyThread()
 		if err != nil {
-			return err
+			return nil, err
 		}
+
+		reportStatus := db.focusOnImportantStatus(resumeThread, stoppedThreads)
+		if reportStatus != nil {
+			return reportStatus, nil
+		}
+	}
+}
+
+// This returns a status if the focus shifted.  Otherwise this returns nil.
+func (db *Debugger) focusOnImportantStatus(
+	resumeThread *ThreadState, // nil for resume all
+	stoppedThreads map[int]*ThreadState,
+) *ThreadStatus {
+	for _, thread := range stoppedThreads {
+		if thread.status.IsInternalSigStop {
+			continue
+		}
+
+		if thread.status.StopSignal != syscall.SIGTRAP {
+			db.currentTid = thread.Tid
+			return thread.status
+		}
+
+		switch thread.status.TrapKind {
+		case SyscallTrap:
+			if db.SyscallCatchPolicy.Matches(
+				thread.status.SyscallTrapInfo.Id) {
+
+				db.currentTid = thread.Tid
+				return thread.status
+			}
+		case RendezvousTrap, CloneTrap:
+			// do nothing
+		default:
+			db.currentTid = thread.Tid
+			return thread.status
+		}
+	}
+
+	// Also return if the non-main resumeThread exited / terminated (not listed
+	// in stoppedThreads) to give user a chance to focus on another thread.
+	if resumeThread != nil && !resumeThread.status.Stopped {
+		if resumeThread.status.Running() {
+			panic("should never happen")
+		}
+
+		// arbitrarily pick main thread since it's always available.
+		db.currentTid = db.Pid
+		return db.MainThread().status
+	}
+
+	if !db.MainThread().status.Stopped { // main thread exited / terminated
+		db.currentTid = db.Pid
+		return db.MainThread().status
 	}
 
 	return nil

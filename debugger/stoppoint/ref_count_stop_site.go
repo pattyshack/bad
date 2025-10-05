@@ -4,8 +4,6 @@ import (
 	"fmt"
 
 	. "github.com/pattyshack/bad/debugger/common"
-	"github.com/pattyshack/bad/debugger/memory"
-	"github.com/pattyshack/bad/debugger/registers"
 )
 
 type refCountStopSite struct {
@@ -37,12 +35,11 @@ type refCountStopSitePool struct {
 }
 
 func NewStopSitePool(
-	registers *registers.Registers,
-	memory *memory.VirtualMemory,
+	process Process,
 ) StopSitePool {
 	return &refCountStopSitePool{
-		software:  newSoftwareStopSitePool(memory),
-		hardware:  newHardwareStopSitePool(registers, memory),
+		software:  newSoftwareStopSitePool(process.Memory()),
+		hardware:  newHardwareStopSitePool(process),
 		allocated: map[StopSiteKey]*refCountStopSite{},
 	}
 }
@@ -116,4 +113,13 @@ func (pool *refCountStopSitePool) ListTriggered(
 		return pool.hardware.ListTriggered(pc, kind)
 	}
 	return pool.software.ListTriggered(pc, kind)
+}
+
+func (pool *refCountStopSitePool) RefreshSites() error {
+	err := pool.software.RefreshSites()
+	if err != nil {
+		return err
+	}
+
+	return pool.hardware.RefreshSites()
 }

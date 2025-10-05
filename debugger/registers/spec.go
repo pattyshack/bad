@@ -192,6 +192,10 @@ var (
 	StackPointer   Spec
 	FramePointer   Spec
 
+	DebugControl   Spec
+	DebugStatus    Spec
+	DebugAddresses []Spec
+
 	SyscallNum  Spec
 	SyscallArgs []Spec
 	SyscallRet  Spec
@@ -376,6 +380,14 @@ func init() {
 	ProgramCounter, _ = ByName("rip")
 	StackPointer, _ = ByName("rsp")
 	FramePointer, _ = ByName("rbp")
+
+	DebugControl, _ = ByName("dr7")
+	DebugStatus, _ = ByName("dr6")
+
+	for _, name := range []string{"dr0", "dr1", "dr2", "dr3"} {
+		reg, _ := ByName(name)
+		DebugAddresses = append(DebugAddresses, reg)
+	}
 
 	SyscallNum, _ = ByName("orig_rax")
 	SyscallRet, _ = ByName("rax")

@@ -8,23 +8,23 @@ import (
 )
 
 type VirtualMemory struct {
-	tracer *ptrace.Tracer
+	processTracer *ptrace.Tracer
 }
 
-func New(tracer *ptrace.Tracer) *VirtualMemory {
+func New(processTracer *ptrace.Tracer) *VirtualMemory {
 	return &VirtualMemory{
-		tracer: tracer,
+		processTracer: processTracer,
 	}
 }
 
 func (vm *VirtualMemory) Read(addr VirtualAddress, out []byte) (int, error) {
-	count, err := vm.tracer.ReadFromVirtualMemory(uintptr(addr), out)
+	count, err := vm.processTracer.ReadFromVirtualMemory(uintptr(addr), out)
 	if err != nil {
 		return 0, fmt.Errorf(
 			"failed to read from virtual memory at %s (%d) for process %d: %w",
 			addr,
 			len(out),
-			vm.tracer.Pid(),
+			vm.processTracer.Pid,
 			err)
 	}
 
@@ -32,13 +32,13 @@ func (vm *VirtualMemory) Read(addr VirtualAddress, out []byte) (int, error) {
 }
 
 func (vm *VirtualMemory) Write(addr VirtualAddress, data []byte) (int, error) {
-	count, err := vm.tracer.PokeData(uintptr(addr), data)
+	count, err := vm.processTracer.PokeData(uintptr(addr), data)
 	if err != nil {
 		return 0, fmt.Errorf(
 			"failed to write to virtual memory at %s (%d) for process %d: %w",
 			addr,
 			len(data),
-			vm.tracer.Pid(),
+			vm.processTracer.Pid,
 			err)
 	}
 

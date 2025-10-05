@@ -7,6 +7,8 @@ anti_debugger
 hello_world
 memory
 multi_cu
+multi_threaded
+multi_threaded2
 overloaded
 print_longdouble
 reg_read

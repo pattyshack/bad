@@ -22,6 +22,7 @@ const (
 
 	// A debugger internal software trap that should not be exposed to the user
 	RendezvousTrap = TrapKind("rendezvous trap")
+	CloneTrap      = TrapKind("clone")
 )
 
 func TrapCodeToKind(code int32) TrapKind {

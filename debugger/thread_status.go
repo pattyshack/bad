@@ -11,13 +11,26 @@ import (
 	"github.com/pattyshack/bad/debugger/stoppoint"
 	"github.com/pattyshack/bad/dwarf"
 	"github.com/pattyshack/bad/elf"
+	"github.com/pattyshack/bad/ptrace"
 )
 
-type ProcessStatus struct {
-	Pid int
+const (
+	syscallTrapSignal = syscall.SIGTRAP | 0x80
+
+	// NOTE: clone ptrace event use bits aren't part of the stop signal.
+	// The event is triggered on the clone caller thread.  A corresponding
+	// sig stop is trigger by the newly thread.
+	cloneTrapExtendedSignal = int(syscall.SIGTRAP) | int(ptrace.EVENT_CLONE<<8)
+)
+
+type ThreadStatus struct {
+	Tid int
 
 	Stopped    bool
 	StopSignal syscall.Signal
+
+	// Only populated when thread is stopped by SIGSTOP
+	IsInternalSigStop bool
 
 	Signaled bool
 	Signal   syscall.Signal
@@ -25,34 +38,34 @@ type ProcessStatus struct {
 	Exited     bool
 	ExitStatus int
 
-	// Only populated when process is stopped.
+	// Only populated when thread is stopped.
 	NextInstructionAddress VirtualAddress
 
-	// Only populated when process is stopped
+	// Only populated when thread is stopped
 	FunctionName string
 
-	// Only populated when process is stopped (populated as part of call stack
+	// Only populated when thread is stopped (populated as part of call stack
 	// update)
 	*dwarf.FileEntry
 	Line int64
 
-	// Only populated when process is stopped by SIGTRAP
+	// Only populated when thread is stopped by SIGTRAP
 	TrapKind
 
-	// Only populated when process is stopped by break points / watch points
+	// Only populated when thread is stopped by break points / watch points
 	StopPoints []stoppoint.Triggered
 
-	// Only populated when process is stopped by SyscallTrap
+	// Only populated when thread is stopped by SyscallTrap
 	SyscallTrapInfo *catchpoint.SyscallTrapInfo
 }
 
-func (status ProcessStatus) Running() bool {
+func (status ThreadStatus) Running() bool {
 	return !status.Stopped && !status.Signaled && !status.Exited
 }
 
-func (status ProcessStatus) String() string {
+func (status ThreadStatus) String() string {
 	if status.Running() {
-		return fmt.Sprintf("process %d running", status.Pid)
+		return fmt.Sprintf("thread %d running", status.Tid)
 	} else if status.Stopped {
 		reason := ""
 		if status.StopSignal == syscall.SIGTRAP &&
@@ -102,8 +115,8 @@ func (status ProcessStatus) String() string {
 		}
 
 		return fmt.Sprintf(
-			"process %d stopped\n  at: %s%s%s\n  with signal: %v%s",
-			status.Pid,
+			"thread %d stopped\n  at: %s%s%s\n  with signal: %v%s",
+			status.Tid,
 			status.NextInstructionAddress,
 			onLine,
 			inFunc,
@@ -111,30 +124,30 @@ func (status ProcessStatus) String() string {
 			reason)
 	} else if status.Signaled {
 		return fmt.Sprintf(
-			"process %d terminated with signal: %v",
-			status.Pid,
+			"thread %d terminated with signal: %v",
+			status.Tid,
 			status.Signal)
 	} else if status.Exited {
 		return fmt.Sprintf(
-			"process %d exited with status: %d",
-			status.Pid,
+			"thread %d exited with status: %d",
+			status.Tid,
 			status.ExitStatus)
 	} else {
 		panic("shold never happen")
 	}
 }
 
-func newRunningStatus(pid int) *ProcessStatus {
-	return &ProcessStatus{
-		Pid: pid,
+func newRunningStatus(tid int) *ThreadStatus {
+	return &ThreadStatus{
+		Tid: tid,
 	}
 }
 
 func newInlinedStepInStatus(
-	status *ProcessStatus,
-) *ProcessStatus {
-	return &ProcessStatus{
-		Pid:                    status.Pid,
+	status *ThreadStatus,
+) *ThreadStatus {
+	return &ThreadStatus{
+		Tid:                    status.Tid,
 		Stopped:                true,
 		StopSignal:             syscall.SIGTRAP,
 		NextInstructionAddress: status.NextInstructionAddress,
@@ -144,11 +157,11 @@ func newInlinedStepInStatus(
 }
 
 func newSimpleWaitingStatus(
-	pid int,
+	tid int,
 	waitStatus syscall.WaitStatus,
-) *ProcessStatus {
-	return &ProcessStatus{
-		Pid:        pid,
+) *ThreadStatus {
+	return &ThreadStatus{
+		Tid:        tid,
 		Stopped:    waitStatus.Stopped(),
 		StopSignal: waitStatus.StopSignal(),
 		Signaled:   waitStatus.Signaled(),
@@ -158,25 +171,29 @@ func newSimpleWaitingStatus(
 	}
 }
 
-// Note: this creates a new ProcessStatus without making any modification to
+// Note: this creates a new ThreadStatus without making any modification to
 // the debugger's internal state.
 func newDetailedWaitingStatus(
-	proc *Debugger,
+	thread *ThreadState,
 	waitStatus syscall.WaitStatus,
 ) (
-	*ProcessStatus,
+	*ThreadStatus,
 	bool, // should reset program counter
 	error,
 ) {
-	status := newSimpleWaitingStatus(proc.Pid, waitStatus)
+	status := newSimpleWaitingStatus(thread.Tid, waitStatus)
 
 	if !status.Stopped {
 		return status, false, nil
 	}
 
-	registerState, pc, err := proc.Registers.GetProgramCounter()
+	registerState, pc, err := thread.Registers.GetProgramCounter()
 	if err != nil {
 		return nil, false, err
+	}
+
+	if status.StopSignal == syscall.SIGSTOP {
+		status.IsInternalSigStop = thread.hasPendingSigStop
 	}
 
 	shouldResetProgramCounter := false
@@ -185,20 +202,27 @@ func newDetailedWaitingStatus(
 		status.StopSignal = syscall.SIGTRAP
 		status.TrapKind = SyscallTrap
 
-		if proc.expectsSyscallExit { // syscall returned
+		if thread.expectsSyscallExit { // syscall returned
 			status.SyscallTrapInfo = catchpoint.NewSyscallTrapExitInfo(registerState)
 		} else { // syscall entry
 			status.SyscallTrapInfo = catchpoint.NewSyscallTrapEntryInfo(registerState)
 		}
 	} else if status.StopSignal == syscall.SIGTRAP {
-		sigInfo, err := proc.tracer.GetSigInfo()
-		if err != nil {
-			return nil, false, err
+		// NOTE: clone ptrace event use bits aren't part of the stop signal.
+		if int(waitStatus>>8) == cloneTrapExtendedSignal {
+			status.TrapKind = CloneTrap
+		} else {
+			sigInfo, err := thread.threadTracer.GetSigInfo()
+			if err != nil {
+				return nil, false, err
+			}
+
+			status.TrapKind = TrapCodeToKind(sigInfo.Code)
 		}
 
-		status.TrapKind = TrapCodeToKind(sigInfo.Code)
-
-		realPC, siteKeys, err := proc.stopSites.ListTriggered(pc, status.TrapKind)
+		realPC, siteKeys, err := thread.stopSites.ListTriggered(
+			pc,
+			status.TrapKind)
 		if err != nil {
 			return nil, false, err
 		}
@@ -206,12 +230,12 @@ func newDetailedWaitingStatus(
 		shouldResetProgramCounter = pc != realPC
 		pc = realPC
 
-		triggered := proc.BreakPoints.Match(siteKeys)
-		triggered = append(triggered, proc.WatchPoints.Match(siteKeys)...)
+		triggered := thread.BreakPoints.Match(siteKeys)
+		triggered = append(triggered, thread.WatchPoints.Match(siteKeys)...)
 		status.StopPoints = triggered
 
 		if status.TrapKind == SoftwareTrap && len(status.StopPoints) == 0 {
-			_, ok := proc.rendezvousAddresses[pc]
+			_, ok := thread.rendezvousAddresses[pc]
 			if ok {
 				status.TrapKind = RendezvousTrap
 			}
@@ -220,7 +244,8 @@ func newDetailedWaitingStatus(
 
 	status.NextInstructionAddress = pc
 
-	funcEntry, err := proc.LoadedElves.FunctionEntryContainingAddress(pc)
+	funcEntry, err := thread.LoadedElves.FunctionEntryContainingAddress(
+		pc)
 	if err != nil {
 		return nil, false, err
 	}
@@ -239,7 +264,7 @@ func newDetailedWaitingStatus(
 	}
 
 	if status.FunctionName == "" {
-		symbol := proc.LoadedElves.SymbolSpans(pc)
+		symbol := thread.LoadedElves.SymbolSpans(pc)
 		if symbol != nil && symbol.Type() == elf.SymbolTypeFunction {
 			prefix := ""
 			if symbol.Parent.File().FileName != "" {

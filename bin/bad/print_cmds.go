@@ -31,7 +31,7 @@ func backtrace(db *debugger.Debugger, args []string) error {
 	}
 
 	fmt.Println("Backtrace:")
-	for idx, frame := range db.CallStack.ExecutingStack() {
+	for idx, frame := range db.CurrentThread().CallStack.ExecutingStack() {
 		inlinedStr := ""
 		if frame.IsInlined() {
 			inlinedStr = fmt.Sprintf("(inlined in %s) ", frame.BaseFrame.Name)
@@ -63,7 +63,7 @@ func backtrace(db *debugger.Debugger, args []string) error {
 
 func disassemble(db *debugger.Debugger, args []string) error {
 	addrStr := ""
-	addr := db.Status().NextInstructionAddress
+	addr := db.CurrentThread().Status().NextInstructionAddress
 
 	numInstStr := ""
 	numInst := 5
@@ -121,7 +121,7 @@ func disassemble(db *debugger.Debugger, args []string) error {
 	return nil
 }
 
-func printProcessStatus(db *debugger.Debugger, status *debugger.ProcessStatus) {
+func printThreadStatus(db *debugger.Debugger, status *debugger.ThreadStatus) {
 	fmt.Println(status)
 	if !status.Stopped {
 		return
@@ -157,7 +157,7 @@ func printProcessStatus(db *debugger.Debugger, status *debugger.ProcessStatus) {
 }
 
 func printStatus(db *debugger.Debugger, args []string) error {
-	printProcessStatus(db, db.Status())
+	printThreadStatus(db, db.CurrentThread().Status())
 	return nil
 }
 

@@ -8,11 +8,16 @@ import (
 
 type Options int
 
+type Event int
+
 const (
 	vmPageSize = 0x1000
 
 	O_EXITKILL     = Options(unix.PTRACE_O_EXITKILL)
 	O_TRACESYSGOOD = Options(unix.PTRACE_O_TRACESYSGOOD)
+	O_TRACECLONE   = Options(unix.PTRACE_O_TRACECLONE)
+
+	EVENT_CLONE = Event(unix.PTRACE_EVENT_CLONE)
 )
 
 // This matches user_regs_struct (64bit variant) defined in <sys/user.h>

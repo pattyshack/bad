@@ -5,7 +5,13 @@ import (
 
 	. "github.com/pattyshack/bad/debugger/common"
 	"github.com/pattyshack/bad/debugger/memory"
+	"github.com/pattyshack/bad/debugger/registers"
 )
+
+type Process interface {
+	AllRegisters() []*registers.Registers
+	Memory() *memory.VirtualMemory
+}
 
 type StopSiteMode string
 
@@ -172,6 +178,9 @@ type StopSitePool interface {
 		map[StopSiteKey]struct{},
 		error,
 	)
+
+	// Called when the debugger finds new threads.
+	RefreshSites() error
 }
 
 type watchSiteAllocator struct {

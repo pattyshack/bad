@@ -4,7 +4,6 @@ import (
 	"fmt"
 
 	. "github.com/pattyshack/bad/debugger/common"
-	"github.com/pattyshack/bad/debugger/memory"
 	"github.com/pattyshack/bad/debugger/registers"
 )
 
@@ -14,18 +13,13 @@ const (
 )
 
 type hardwareStopSitePool struct {
-	registers *registers.Registers
-	memory    *memory.VirtualMemory
+	process   Process
 	stopSites [4]*hardwareStopSite
 }
 
-func newHardwareStopSitePool(
-	registers *registers.Registers,
-	memory *memory.VirtualMemory,
-) StopSitePool {
+func newHardwareStopSitePool(process Process) StopSitePool {
 	return &hardwareStopSitePool{
-		registers: registers,
-		memory:    memory,
+		process: process,
 	}
 }
 
@@ -80,7 +74,7 @@ func (pool *hardwareStopSitePool) deallocate(
 		}
 	}
 
-	return pool.updateDebugRegisters()
+	return pool.RefreshSites()
 }
 
 func (pool *hardwareStopSitePool) controlBytes() uint64 {
@@ -158,40 +152,47 @@ func (pool *hardwareStopSitePool) controlBytes() uint64 {
 	return watchSizeBytes | conditionBytes | enabledBytes
 }
 
-func (pool *hardwareStopSitePool) updateDebugRegisters() error {
-	state, err := pool.registers.GetState()
+func (pool *hardwareStopSitePool) RefreshSites() error {
+	for _, threadRegisters := range pool.process.AllRegisters() {
+		err := pool.updateDebugRegisters(threadRegisters)
+		if err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+func (pool *hardwareStopSitePool) updateDebugRegisters(
+	threadRegisters *registers.Registers,
+) error {
+	state, err := threadRegisters.GetState()
 	if err != nil {
 		return fmt.Errorf("failed to update hardware stop sites: %w", err)
 	}
 
-	reg, ok := registers.ByName(debugControlRegister)
-	if !ok {
-		panic("should never happen")
-	}
-
-	state, err = state.WithValue(reg, registers.U64(pool.controlBytes()))
+	state, err = state.WithValue(
+		registers.DebugControl,
+		registers.U64(pool.controlBytes()))
 	if err != nil {
 		return fmt.Errorf("failed to update hardware stop sites: %w", err)
 	}
 
 	for idx, site := range pool.stopSites {
-		reg, ok := registers.ByName(fmt.Sprintf("dr%d", idx))
-		if !ok {
-			panic("should never happen")
-		}
-
 		addr := uint64(0)
 		if site != nil {
 			addr = uint64(site.address)
 		}
 
-		state, err = state.WithValue(reg, registers.U64(addr))
+		state, err = state.WithValue(
+			registers.DebugAddresses[idx],
+			registers.U64(addr))
 		if err != nil {
 			fmt.Errorf("failed to update hardware stop sites: %w", err)
 		}
 	}
 
-	err = pool.registers.SetState(state)
+	err = threadRegisters.SetState(state)
 	if err != nil {
 		return fmt.Errorf("failed to update hardware stop sites: %w", err)
 	}
@@ -203,7 +204,7 @@ func (pool *hardwareStopSitePool) updateStopSiteData(
 	site *hardwareStopSite,
 ) error {
 	content := make([]byte, site.siteType.WatchSize)
-	n, err := pool.memory.Read(site.address, content)
+	n, err := pool.process.Memory().Read(site.address, content)
 	if err != nil {
 		return fmt.Errorf("failed to update hardware stop site data: %w", err)
 	}
@@ -251,31 +252,42 @@ func (pool *hardwareStopSitePool) ListTriggered(
 		return pc, nil, nil
 	}
 
-	state, err := pool.registers.GetState()
-	if err != nil {
-		return pc, nil, fmt.Errorf("failed to list triggered stop sites: %w", err)
-	}
-
 	reg, ok := registers.ByName(debugStatusRegister)
 	if !ok {
 		panic("should never happen")
 	}
 
-	status := state.Value(reg).ToUint64()
 	triggered := map[StopSiteKey]struct{}{}
-	for idx, site := range pool.stopSites {
-		if status&uint64(1<<idx) > 0 {
-			if site == nil {
-				panic("should never happen")
-			}
-			triggered[site.Key()] = struct{}{}
+	for _, threadRegisters := range pool.process.AllRegisters() {
+		state, err := threadRegisters.GetState()
+		if err != nil {
+			return pc, nil, fmt.Errorf("failed to list triggered stop sites: %w", err)
+		}
 
-			err = pool.updateStopSiteData(site)
-			if err != nil {
-				return pc, nil, fmt.Errorf(
-					"failed to list triggered stop sites: %w",
-					err)
+		status := state.Value(reg).ToUint64()
+		for idx, site := range pool.stopSites {
+			if status&uint64(1<<idx) > 0 {
+				if site == nil {
+					panic("should never happen")
+				}
+				triggered[site.Key()] = struct{}{}
 			}
+		}
+	}
+
+	for _, site := range pool.stopSites {
+		if site == nil {
+			continue
+		}
+
+		_, ok := triggered[site.Key()]
+		if !ok {
+			continue
+		}
+
+		err := pool.updateStopSiteData(site)
+		if err != nil {
+			return pc, nil, fmt.Errorf("failed to list triggered stop sites: %w", err)
 		}
 	}
 
@@ -327,7 +339,7 @@ func (site *hardwareStopSite) Enable() error {
 	}
 
 	site.isEnabled = true
-	err := site.pool.updateDebugRegisters()
+	err := site.pool.RefreshSites()
 	if err != nil {
 		return fmt.Errorf(
 			"failed to enable %s at %s: %w",
@@ -345,7 +357,7 @@ func (site *hardwareStopSite) Disable() error {
 	}
 
 	site.isEnabled = false
-	err := site.pool.updateDebugRegisters()
+	err := site.pool.RefreshSites()
 	if err != nil {
 		return fmt.Errorf("failed to disable %s at %s: %w",
 			site.siteType,

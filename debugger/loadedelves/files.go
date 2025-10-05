@@ -18,6 +18,7 @@ const (
 	elfDynamicSection = ".dynamic"
 
 	debugRendezvousSize = 40
+	linkMapEntrySize    = 32
 	maxLinuxPathLength  = 4096
 )
 
@@ -60,10 +61,8 @@ type linkMapEntry struct {
 type Files struct {
 	memory *memory.VirtualMemory
 
-	binary *File
-	loaded map[string]*File
-
-	rendezvousAddress VirtualAddress
+	Executable *File
+	loaded     map[string]*File
 }
 
 func NewFiles(mem *memory.VirtualMemory) *Files {
@@ -88,9 +87,9 @@ func (files *Files) Files() []*File {
 	return result
 }
 
-func (files *Files) LoadBinary(pid int) (*File, error) {
-	if files.binary != nil {
-		return files.binary, nil
+func (files *Files) LoadExecutable(pid int) (*File, error) {
+	if files.Executable != nil {
+		return files.Executable, nil
 	}
 
 	file, err := newExecutableFile(pid)
@@ -98,13 +97,13 @@ func (files *Files) LoadBinary(pid int) (*File, error) {
 		return nil, err
 	}
 
-	files.binary = file
+	files.Executable = file
 	files.loaded[""] = file
 	return file, nil
 }
 
 func (files *Files) UpdateFiles() (VirtualAddress, bool, error) {
-	notifyAddress, loadedLibs, err := files.readRendezvousInfo()
+	notifyAddress, loadedLibs, err := files.ReadRendezvousInfo()
 	if err != nil {
 		return 0, false, err
 	}
@@ -149,7 +148,7 @@ func (files *Files) UpdateFiles() (VirtualAddress, bool, error) {
 
 // NOTE: the dynamic linker's rendezvous information is only valid after the
 // program has reached the main entry point.
-func (files *Files) readRendezvousInfo() (
+func (files *Files) ReadRendezvousInfo() (
 	VirtualAddress, // notify function address
 	map[string]VirtualAddress, // loaded libraries
 	error,
@@ -166,13 +165,13 @@ func (files *Files) _readRendezvousInfo() (
 	map[string]VirtualAddress, // loaded libraries
 	error,
 ) {
-	_, err := files.LocateRendezvousAddress()
+	rendezvousAddress, err := files.LocateRendezvousAddress()
 	if err != nil {
 		return 0, nil, err
 	}
 
 	rendezvousBytes := make([]byte, debugRendezvousSize)
-	n, err := files.memory.Read(files.rendezvousAddress, rendezvousBytes)
+	n, err := files.memory.Read(rendezvousAddress, rendezvousBytes)
 	if err != nil {
 		return 0, nil, fmt.Errorf("failed to read debug rendezvous: %w", err)
 	}
@@ -203,7 +202,7 @@ func (files *Files) _readRendezvousInfo() (
 
 	loadedLibs := map[string]VirtualAddress{}
 
-	linkMapBytes := make([]byte, 32)
+	linkMapBytes := make([]byte, linkMapEntrySize)
 	linkMap := &linkMapEntry{}
 
 	nameBytes := make([]byte, maxLinuxPathLength)
@@ -214,7 +213,7 @@ func (files *Files) _readRendezvousInfo() (
 		if err != nil {
 			return 0, nil, fmt.Errorf("failed to read link map entry: %w", err)
 		}
-		if n != 32 {
+		if n != linkMapEntrySize {
 			panic("should never happen")
 		}
 
@@ -222,7 +221,7 @@ func (files *Files) _readRendezvousInfo() (
 		if err != nil {
 			return 0, nil, fmt.Errorf("failed to decode link map entry: %w", err)
 		}
-		if n != 32 {
+		if n != linkMapEntrySize {
 			panic("should never happen")
 		}
 
@@ -246,17 +245,13 @@ func (files *Files) _readRendezvousInfo() (
 }
 
 func (files *Files) LocateRendezvousAddress() (VirtualAddress, error) {
-	if files.rendezvousAddress != 0 {
-		return files.rendezvousAddress, nil
-	}
-
-	section := files.binary.GetSection(elfDynamicSection)
+	section := files.Executable.GetSection(elfDynamicSection)
 	if section == nil {
 		return 0, fmt.Errorf("elf .dynamic section not found")
 	}
 
 	header := section.Header()
-	sectionAddress := files.binary.ToVirtualAddress(
+	sectionAddress := files.Executable.ToVirtualAddress(
 		elf.FileAddress(header.Address))
 
 	sectionBytes := make([]byte, int(header.Size))
@@ -283,7 +278,6 @@ func (files *Files) LocateRendezvousAddress() (VirtualAddress, error) {
 	for _, entry := range dynamicEntries {
 		if entry.DynamicTag == elf.DynamicTagDebug && entry.ValueOrAddress != 0 {
 			address := VirtualAddress(entry.ValueOrAddress)
-			files.rendezvousAddress = address
 
 			return address, nil
 		}
@@ -293,7 +287,8 @@ func (files *Files) LocateRendezvousAddress() (VirtualAddress, error) {
 }
 
 func (files *Files) EntryPoint() VirtualAddress {
-	return files.binary.ToVirtualAddress(files.binary.EntryPointFileAddress())
+	return files.Executable.ToVirtualAddress(
+		files.Executable.EntryPointFileAddress())
 }
 
 func (files *Files) ParseAddress(value string) (VirtualAddress, error) {

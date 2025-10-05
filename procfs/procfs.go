@@ -290,3 +290,23 @@ func GetMappedMemoryRegions(pid int) ([]MappedMemoryRegion, error) {
 func GetExecutableSymlinkPath(pid int) string {
 	return fmt.Sprintf("/proc/%d/exe", pid)
 }
+
+func ListTasks(pid int) ([]int, error) {
+	path := fmt.Sprintf("/proc/%d/task", pid)
+	entries, err := os.ReadDir(path)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read %s: %w", path, err)
+	}
+
+	result := []int{}
+	for _, entry := range entries {
+		tid, err := strconv.ParseInt(entry.Name(), 10, 32)
+		if err != nil {
+			return nil, fmt.Errorf("failed to parse tid (%s): %w", entry.Name(), err)
+		}
+
+		result = append(result, int(tid))
+	}
+
+	return result, nil
+}

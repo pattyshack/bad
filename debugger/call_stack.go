@@ -67,9 +67,9 @@ func newCallStack(
 }
 
 func (stack *CallStack) MaybeStepIntoInlinedFunction(
-	status *ProcessStatus,
+	status *ThreadStatus,
 ) (
-	*ProcessStatus,
+	*ThreadStatus,
 	error,
 ) {
 	if stack.executingFrame > 0 {
@@ -112,7 +112,7 @@ func (stack *CallStack) UnexecutedInlinedFunctionCodeRanges() AddressRanges {
 }
 
 func (stack *CallStack) Update(
-	status *ProcessStatus,
+	status *ThreadStatus,
 	currentState registers.State,
 ) error {
 	err := stack.updateStack(status.NextInstructionAddress, currentState)
@@ -123,7 +123,7 @@ func (stack *CallStack) Update(
 	return stack.populateSourceInfo(status)
 }
 
-func (stack *CallStack) populateSourceInfo(status *ProcessStatus) error {
+func (stack *CallStack) populateSourceInfo(status *ThreadStatus) error {
 	if len(stack.frames) > 0 {
 		executing := stack.frames[stack.executingFrame]
 
