@@ -230,6 +230,16 @@ func (file *File) FunctionEntriesWithName(
 	return file.Dwarf.FunctionEntriesWithName(name)
 }
 
+func (file *File) GlobalVariableEntryWithName(
+	name string,
+) *dwarf.DebugInfoEntry {
+	if file.Dwarf == nil {
+		return nil
+	}
+
+	return file.Dwarf.GlobalVariableEntryWithName(name)
+}
+
 func (file *File) LineEntryAt(
 	address VirtualAddress,
 ) (

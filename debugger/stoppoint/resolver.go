@@ -242,7 +242,7 @@ func (resolver *LineStopSiteResolver) resolveAddresses() (
 		}
 
 		// NOTE: funcEntry is the outer most function entry
-		funcEntry, err := resolver.LoadedElves.FunctionEntryContainingAddress(
+		_, funcEntry, err := resolver.LoadedElves.FunctionEntryContainingAddress(
 			lineAddress)
 		if err != nil {
 			return nil, err

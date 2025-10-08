@@ -18,6 +18,7 @@ import (
 	. "github.com/pattyshack/bad/debugger/common"
 	"github.com/pattyshack/bad/debugger/registers"
 	"github.com/pattyshack/bad/debugger/stoppoint"
+	"github.com/pattyshack/bad/dwarf"
 	"github.com/pattyshack/bad/procfs"
 )
 
@@ -882,4 +883,108 @@ func (DebuggerSuite) TestMultiThreading(t *testing.T) {
 	expect.Equal(t, 10, len(trapped))
 	expect.Equal(t, 10, len(exited))
 	expect.True(t, db.MainThread().Status().Exited)
+}
+
+func (DebuggerSuite) TestDwarfExpression(t *testing.T) {
+	instructions := []byte{
+		// chunk 1
+		byte(dwarf.DW_OP_reg16), byte(dwarf.DW_OP_piece), 4,
+		// chunk 2
+		byte(dwarf.DW_OP_piece), 8,
+		// chunk 3
+		byte(dwarf.DW_OP_const4u), 0xff, 0xff, 0xff, 0xff,
+		byte(dwarf.DW_OP_bit_piece), 5, 12,
+	}
+
+	db, err := StartCmdAndAttachTo("test_targets/step")
+	expect.Nil(t, err)
+	defer db.Close()
+
+	_, err = db.BreakPoints.Set(
+		db.NewFunctionResolver("main"),
+		stoppoint.NewBreakSiteType(false),
+		true)
+	expect.Nil(t, err)
+
+	status, err := db.ResumeAllUntilSignal()
+	expect.Nil(t, err)
+	expect.True(t, status.Stopped)
+	expect.Equal(t, SoftwareTrap, status.TrapKind)
+
+	location, err := dwarf.EvaluateExpression(
+		db.CurrentThread().CallStack.CurrentFrame(),
+		false, // in frame info
+		instructions,
+		false) // push cfa
+	expect.Nil(t, err)
+
+	expect.Equal(t, 3, len(location))
+
+	chunk := location[0]
+	expect.Equal(t, dwarf.RegisterLocation, chunk.Kind)
+	expect.Equal(t, 16, chunk.Value)
+	expect.Equal(t, 4*8, chunk.BitSize)
+	expect.Equal(t, 0, chunk.BitOffset)
+
+	chunk = location[1]
+	expect.Equal(t, dwarf.UnavailableLocation, chunk.Kind)
+	expect.Equal(t, 8*8, chunk.BitSize)
+	expect.Equal(t, 0, chunk.BitOffset)
+
+	chunk = location[2]
+	expect.Equal(t, dwarf.AddressLocation, chunk.Kind)
+	expect.Equal(t, 0xffffffff, chunk.Value)
+	expect.Equal(t, 5, chunk.BitSize)
+	expect.Equal(t, 12, chunk.BitOffset)
+}
+
+func (DebuggerSuite) TestReadGlobalVariable(t *testing.T) {
+	db, err := StartCmdAndAttachTo("test_targets/global_variable")
+	expect.Nil(t, err)
+	defer db.Close()
+
+	_, err = db.BreakPoints.Set(
+		db.NewFunctionResolver("main"),
+		stoppoint.NewBreakSiteType(false),
+		true)
+	expect.Nil(t, err)
+
+	status, err := db.ResumeAllUntilSignal()
+	expect.Nil(t, err)
+	expect.True(t, status.Stopped)
+	expect.Equal(t, SoftwareTrap, status.TrapKind)
+
+	globalVar := db.LoadedElves.GlobalVariableEntryWithName("g_int")
+	expect.NotNil(t, globalVar)
+
+	checkVar := func(value byte) {
+		location, err := globalVar.EvaluateLocation(
+			dwarf.DW_AT_location,
+			db.CurrentThread().CallStack.CurrentFrame(),
+			false, // in frame info
+			false) // push cfa
+		expect.Nil(t, err)
+
+		data, err := db.CurrentThread().CallStack.CurrentFrame().ReadLocationData(
+			location,
+			8)
+		expect.Nil(t, err)
+		expect.Equal(t, []byte{value, 0, 0, 0, 0, 0, 0, 0}, data)
+	}
+
+	checkVar(0)
+
+	status, err = db.StepOver()
+	expect.Nil(t, err)
+	expect.True(t, status.Stopped)
+	expect.Equal(t, SingleStepTrap, status.TrapKind)
+
+	checkVar(1)
+
+	status, err = db.StepOver()
+	expect.Nil(t, err)
+	expect.True(t, status.Stopped)
+	expect.Equal(t, SingleStepTrap, status.TrapKind)
+
+	checkVar(42)
 }

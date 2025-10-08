@@ -233,6 +233,11 @@ func initializeCommands(debugger *debugger.Debugger) command {
 			description: " - commands for operating on threads",
 			command:     threadCmds,
 		},
+		{
+			name:        "variable",
+			description: " <name> - read the global variable data",
+			command:     newFuncCmd(debugger, printVariable),
+		},
 	}
 }
 

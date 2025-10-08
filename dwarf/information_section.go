@@ -8,6 +8,12 @@ import (
 	"github.com/pattyshack/bad/elf"
 )
 
+var (
+	// If Visit's enter ProcessFunc return this error, Visit will consume
+	// this error, and not visit the entry's children.
+	ErrSkipVisitingChildren = fmt.Errorf("skip visiting children")
+)
+
 type ProcessFunc func(*DebugInfoEntry) error
 
 type CompileUnit struct {
@@ -592,4 +598,39 @@ func (section *InformationSection) FunctionEntriesWithName(
 	}
 
 	return result, nil
+}
+
+func (section *InformationSection) GlobalVariableEntryWithName(
+	name string,
+) *DebugInfoEntry {
+	var result *DebugInfoEntry
+	earlyExitErr := fmt.Errorf("early exit")
+	retErr := section.Visit(
+		func(entry *DebugInfoEntry) error {
+			if entry.Tag == DW_TAG_subprogram {
+				return ErrSkipVisitingChildren
+			}
+
+			if entry.Tag != DW_TAG_variable {
+				return nil
+			}
+
+			if entry.SpecIndex(DW_AT_location) != -1 { // has location
+				result = entry
+				return earlyExitErr
+			}
+
+			return nil
+		},
+		nil)
+
+	if retErr == earlyExitErr {
+		return result
+	}
+
+	if retErr != nil {
+		panic(retErr)
+	}
+
+	return nil
 }

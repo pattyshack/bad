@@ -16,6 +16,7 @@ function(add_test_asm_target name)
 endfunction()
 
 add_test_cpp_target(anti_debugger)
+add_test_cpp_target(global_variable)
 add_test_cpp_target(hello_world)
 add_test_cpp_target(memory)
 add_test_cpp_target(multi_threaded)

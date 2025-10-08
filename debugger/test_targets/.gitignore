@@ -4,6 +4,7 @@ cmake_install.cmake
 Makefile
 
 anti_debugger
+global_variable
 hello_world
 memory
 multi_cu

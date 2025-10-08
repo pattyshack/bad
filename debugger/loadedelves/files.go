@@ -428,17 +428,18 @@ func (files *Files) SymbolsByName(name string) []*elf.Symbol {
 func (files *Files) FunctionEntryContainingAddress(
 	address VirtualAddress,
 ) (
+	*File,
 	*dwarf.DebugInfoEntry,
 	error,
 ) {
 	for _, file := range files.loaded {
 		entry, err := file.FunctionEntryContainingAddress(address)
 		if entry != nil || err != nil {
-			return entry, err
+			return file, entry, err
 		}
 	}
 
-	return nil, nil
+	return nil, nil, nil
 }
 
 func (files *Files) FunctionEntriesWithName(
@@ -458,6 +459,18 @@ func (files *Files) FunctionEntriesWithName(
 	}
 
 	return result, nil
+}
+
+func (files *Files) GlobalVariableEntryWithName(
+	name string,
+) *dwarf.DebugInfoEntry {
+	for _, file := range files.loaded {
+		entry := file.GlobalVariableEntryWithName(name)
+		if entry != nil {
+			return entry
+		}
+	}
+	return nil
 }
 
 func (files *Files) LineEntryAt(

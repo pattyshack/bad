@@ -1,6 +1,7 @@
 package dwarf
 
 import (
+	"errors"
 	"fmt"
 
 	"github.com/pattyshack/bad/elf"
@@ -93,14 +94,21 @@ func parseDebugInfoEntry(
 	return code, entry, nil
 }
 
-func (entry *DebugInfoEntry) Any(attr Attribute) (interface{}, bool) {
+func (entry *DebugInfoEntry) SpecIndex(attr Attribute) int {
 	for idx, spec := range entry.AttributeSpecs {
 		if attr == spec.Attribute {
-			return entry.Values[idx], true
+			return idx
 		}
 	}
+	return -1
+}
 
-	return nil, false
+func (entry *DebugInfoEntry) Any(attr Attribute) (interface{}, bool) {
+	idx := entry.SpecIndex(attr)
+	if idx == -1 {
+		return nil, false
+	}
+	return entry.Values[idx], true
 }
 
 func (entry *DebugInfoEntry) Address(
@@ -175,6 +183,49 @@ func (entry *DebugInfoEntry) Reference(
 		return nil, false
 	}
 	return val.(*DebugInfoEntryReference), true
+}
+
+func (entry *DebugInfoEntry) EvaluateLocation(
+	attr Attribute,
+	context ExpressionContext,
+	inFrameInfo bool,
+	initializeStackWithCFA bool,
+) (
+	Location,
+	error,
+) {
+	idx := entry.SpecIndex(attr)
+	if idx == -1 {
+		return nil, nil
+	}
+
+	value := entry.Values[idx]
+
+	switch entry.AttributeSpecs[idx].Format {
+	case DW_FORM_exprloc:
+		return EvaluateExpression(context, inFrameInfo, value.([]byte), false)
+	case DW_FORM_sec_offset: // in .debug_loc
+		root, err := entry.CompileUnit.Root()
+		if err != nil {
+			return nil, err
+		}
+
+		addressRanges, err := root.AddressRanges()
+		if err != nil {
+			return nil, err
+		}
+		if len(addressRanges) == 0 {
+			return nil, fmt.Errorf("compile unit has invalid address ranges")
+		}
+
+		return entry.CompileUnit.File.LocationSection.EvaluateLocation(
+			value.(SectionOffset),
+			addressRanges[0].Low,
+			context,
+			inFrameInfo)
+	default:
+		return nil, fmt.Errorf("invalid location type")
+	}
 }
 
 func (entry *DebugInfoEntry) Name() (
@@ -293,17 +344,24 @@ func (entry *DebugInfoEntry) ContainsAddress(
 }
 
 func (entry *DebugInfoEntry) Visit(enter ProcessFunc, exit ProcessFunc) error {
+	skipVisitingChildren := false
 	if enter != nil {
 		err := enter(entry)
 		if err != nil {
-			return err
+			if errors.Is(err, ErrSkipVisitingChildren) {
+				skipVisitingChildren = true
+			} else {
+				return err
+			}
 		}
 	}
 
-	for _, child := range entry.Children {
-		err := child.Visit(enter, exit)
-		if err != nil {
-			return err
+	if !skipVisitingChildren {
+		for _, child := range entry.Children {
+			err := child.Visit(enter, exit)
+			if err != nil {
+				return err
+			}
 		}
 	}
 

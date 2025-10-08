@@ -14,6 +14,7 @@ var (
 	ElfDebugInformationSection  = ".debug_info"
 	ElfDebugLineSection         = ".debug_line"
 	ElfDebugStringSection       = ".debug_str"
+	ElfDebugLocationSection     = ".debug_loc"
 
 	ElfEhFrameSection    = ".eh_frame"
 	ElfEhFrameHdrSection = ".eh_frame_hdr"
@@ -35,6 +36,7 @@ type File struct {
 	// Optional
 	*StringSection
 	*AddressRangesSection
+	*LocationSection
 }
 
 func NewFile(elfFile *elf.File) (*File, error) {
@@ -68,6 +70,11 @@ func NewFile(elfFile *elf.File) (*File, error) {
 		return nil, err
 	}
 
+	locationSection, err := NewLocationSection(elfFile)
+	if err != nil {
+		return nil, err
+	}
+
 	file := &File{
 		File:                 elfFile,
 		AbbreviationSection:  abbrevSection,
@@ -76,6 +83,7 @@ func NewFile(elfFile *elf.File) (*File, error) {
 		FrameSection:         ehFrameSection,
 		StringSection:        stringSection,
 		AddressRangesSection: addressRangesSection,
+		LocationSection:      locationSection,
 	}
 	infoSection.SetParent(file)
 	ehFrameSection.SetParent(file)

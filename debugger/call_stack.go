@@ -15,6 +15,7 @@ type CallFrame struct {
 	// Inlined frame's base frame.
 	BaseFrame *CallFrame
 
+	File           *loadedelves.File
 	DebugInfoEntry *dwarf.DebugInfoEntry
 
 	Name       string
@@ -33,10 +34,131 @@ type CallFrame struct {
 	// For other backtrace frames, Registers holds the restored values of what
 	// the registers have if the call frame above it returned immediately.
 	Registers registers.State
+
+	memory *memory.VirtualMemory
+
+	// NOTE: canonical frame address is only populated in the base frame.
+	cfa registers.Value
 }
 
 func (frame *CallFrame) IsInlined() bool {
 	return frame.BaseFrame != nil
+}
+
+func (CallFrame) ByteOrder() binary.ByteOrder {
+	return binary.LittleEndian
+}
+
+func (frame *CallFrame) LoadBias() uint64 {
+	return frame.File.LoadBias
+}
+
+func (frame *CallFrame) CurrentFunctionEntry() *dwarf.DebugInfoEntry {
+	return frame.DebugInfoEntry
+}
+
+func (frame *CallFrame) ProgramCounter() uint64 {
+	return uint64(frame.BacktraceProgramCounter)
+}
+
+func (frame *CallFrame) RegisterValue(
+	id dwarf.RegisterId,
+) (
+	uint64,
+	error,
+) {
+	spec, ok := registers.ById(id)
+	if !ok {
+		return 0, fmt.Errorf("invalid register id %d", id)
+	}
+
+	if spec.Size > 8 {
+		return 0, fmt.Errorf("unsupported register size")
+	}
+
+	value := frame.Registers.Value(spec)
+	if value == nil {
+		return 0, fmt.Errorf("register (%d) value unavailable", id)
+	}
+
+	return value.ToUint64(), nil
+}
+
+func (frame *CallFrame) ReadMemory(
+	virtualAddress uint64,
+	out []byte,
+) (
+	int,
+	error,
+) {
+	return frame.memory.Read(VirtualAddress(virtualAddress), out)
+}
+
+func (frame *CallFrame) CanonicalFrameAddress() (uint64, error) {
+	cfa := frame.cfa
+	if cfa == nil && frame.BaseFrame != nil {
+		cfa = frame.BaseFrame.cfa
+	}
+
+	if cfa == nil {
+		return 0, fmt.Errorf("cfa unavailable")
+	}
+
+	return cfa.ToUint64(), nil
+}
+
+func (frame *CallFrame) ReadLocationData(
+	location dwarf.Location,
+	byteSize int,
+) (
+	[]byte,
+	error,
+) {
+	appender := &BitsAppender{}
+
+	for _, chunk := range location {
+		var chunkData []byte
+		switch chunk.Kind {
+		case dwarf.RegisterLocation:
+			id := dwarf.RegisterId(chunk.Value)
+			spec, ok := registers.ById(id)
+			if !ok {
+				return nil, fmt.Errorf("invalid register id %d", id)
+			}
+
+			value := frame.Registers.Value(spec)
+			if value == nil {
+				return nil, fmt.Errorf("register (%d) value unavailable", id)
+			}
+
+			chunkData = value.ToBytes()
+		case dwarf.AddressLocation:
+			chunkData = make([]byte, byteSize)
+			n, err := frame.memory.Read(VirtualAddress(chunk.Value), chunkData)
+			if err != nil {
+				return nil, err
+			}
+
+			chunkData = chunkData[:n]
+		case dwarf.ImplicitLiteralLocation:
+			chunkData = registers.U64(chunk.Value).ToBytes()
+		case dwarf.ImplicitDataLocation:
+			chunkData = chunk.Data
+		default:
+			return nil, fmt.Errorf(
+				"data unavailable for location kind (%s)",
+				chunk.Kind)
+		}
+
+		bitSize := int(chunk.BitSize)
+		if bitSize == 0 {
+			bitSize = len(chunkData) * 8
+		}
+
+		appender.AppendSlice(chunkData, int(chunk.BitOffset), bitSize)
+	}
+
+	return appender.Finalize(), nil
 }
 
 type CallStack struct {
@@ -174,7 +296,9 @@ func (stack *CallStack) updateStack(
 			break
 		}
 
-		_, currentState, err = stack.unwind(currentState, rules)
+		currentState, err = stack.unwind(
+			stack.frames[len(stack.frames)-1],
+			rules)
 		if err != nil {
 			return err
 		}
@@ -220,7 +344,7 @@ func (stack *CallStack) pushCallFrames(
 		}
 	}
 
-	die, err := stack.loadedElves.FunctionEntryContainingAddress(pc)
+	loaded, die, err := stack.loadedElves.FunctionEntryContainingAddress(pc)
 	if err != nil {
 		return false, err
 	}
@@ -245,11 +369,13 @@ func (stack *CallStack) pushCallFrames(
 
 	baseFrame := &CallFrame{
 		BaseFrame:               nil,
+		File:                    loaded,
 		DebugInfoEntry:          die,
 		Name:                    name,
 		CodeRanges:              codeRanges,
 		BacktraceProgramCounter: pc,
 		Registers:               state,
+		memory:                  stack.memory,
 	}
 
 	currentFrame := baseFrame
@@ -282,11 +408,13 @@ func (stack *CallStack) pushCallFrames(
 
 				currentFrame = &CallFrame{
 					BaseFrame:               baseFrame,
+					File:                    loaded,
 					DebugInfoEntry:          child,
 					Name:                    name,
 					CodeRanges:              codeRanges,
 					BacktraceProgramCounter: pc,
 					Registers:               state,
+					memory:                  stack.memory,
 				}
 				frames = append(frames, currentFrame)
 
@@ -317,14 +445,13 @@ func (stack *CallStack) pushCallFrames(
 // the register state is the values that the registers would have if the
 // current function immediately returned to its caller.
 func (stack *CallStack) unwind(
-	currentState registers.State,
+	currentFrame *CallFrame,
 	rules *dwarf.UnwindRules,
 ) (
-	registers.Value, // Canonical frame address
 	registers.State,
 	error,
 ) {
-	previousState := currentState
+	previousState := currentFrame.Registers
 
 	var cfa registers.Value
 	var err error
@@ -332,37 +459,55 @@ func (stack *CallStack) unwind(
 	case dwarf.CFARegisterOffsetRule:
 		register, ok := registers.ById(rules.CanonicalFrameAddress.RegisterId)
 		if !ok {
-			return nil, registers.State{}, fmt.Errorf(
+			return registers.State{}, fmt.Errorf(
 				"register (%d) not found",
 				rules.CanonicalFrameAddress.RegisterId)
 		}
 
-		value := currentState.Value(register)
+		value := currentFrame.Registers.Value(register)
 		if value != nil {
 			cfa = registers.U64(
 				uint64(int64(value.ToUint64()) + rules.CanonicalFrameAddress.Offset))
-
-			previousState, err = previousState.WithValue(
-				registers.StackPointer,
-				cfa)
-			if err != nil {
-				return nil, registers.State{}, fmt.Errorf("cannot set cfa: %w", err)
-			}
 		} else {
-			previousState = previousState.WithUndefined(registers.StackPointer)
+			return registers.State{}, fmt.Errorf("undefined cfa")
 		}
+	case dwarf.CFAExpressionRule:
+		location, err := dwarf.EvaluateExpression(
+			currentFrame,
+			true,
+			rules.CanonicalFrameAddress.ExpressionInstructions,
+			false)
+		if err != nil {
+			return registers.State{}, fmt.Errorf(
+				"cannot evaluate cfa expresion: %w",
+				err)
+		}
+
+		if len(location) != 1 || location[0].Kind != dwarf.AddressLocation {
+			return registers.State{}, fmt.Errorf(
+				"invalid evaluated cfa location: %v",
+				location)
+		}
+
+		cfa = registers.U64(location[0].Value)
 	default:
-		return nil, registers.State{}, fmt.Errorf(
+		return registers.State{}, fmt.Errorf(
 			"unsupported cfa rule kind (%s)",
 			rules.CanonicalFrameAddress.Kind)
 	}
+
+	previousState, err = previousState.WithValue(registers.StackPointer, cfa)
+	if err != nil {
+		return registers.State{}, fmt.Errorf("cannot set cfa: %w", err)
+	}
+	currentFrame.cfa = cfa
 
 	for registerId, rule := range rules.Registers {
 		var value registers.Value
 
 		register, ok := registers.ById(registerId)
 		if !ok {
-			return nil, registers.State{}, fmt.Errorf(
+			return registers.State{}, fmt.Errorf(
 				"register (%d) not found",
 				registerId)
 		}
@@ -373,23 +518,36 @@ func (stack *CallStack) unwind(
 		case dwarf.InRegisterRule:
 			otherRegister, ok := registers.ById(rule.RegisterId)
 			if !ok {
-				return nil, registers.State{}, fmt.Errorf(
+				return registers.State{}, fmt.Errorf(
 					"register (%d) not found",
 					rule.RegisterId)
 			}
-			value = currentState.Value(otherRegister)
+			value = currentFrame.Registers.Value(otherRegister)
 		case dwarf.SameValueRule:
-			value = currentState.Value(register)
+			value = currentFrame.Registers.Value(register)
 		case dwarf.OffsetRule, dwarf.ValueOffsetRule:
 			if cfa != nil {
 				value = registers.U64(uint64(int64(cfa.ToUint64()) + rule.Offset))
 			}
-		case dwarf.ExpressionRule:
-			panic("TODO")
-		case dwarf.ValueExpressionRule:
-			panic("TODO")
+		case dwarf.ExpressionRule, dwarf.ValueExpressionRule:
+			location, err := dwarf.EvaluateExpression(
+				currentFrame,
+				true,
+				rule.ExpressionInstructions,
+				true)
+			if err != nil {
+				return registers.State{}, err
+			}
+
+			if len(location) != 1 || location[0].Kind != dwarf.AddressLocation {
+				return registers.State{}, fmt.Errorf(
+					"invalid evaluated location: %v",
+					location)
+			}
+
+			value = registers.U64(location[0].Value)
 		default:
-			return nil, registers.State{}, fmt.Errorf(
+			return registers.State{}, fmt.Errorf(
 				"unsupported register rule kind (%s)",
 				rule.Kind)
 		}
@@ -398,13 +556,13 @@ func (stack *CallStack) unwind(
 			(rule.Kind == dwarf.OffsetRule || rule.Kind == dwarf.ExpressionRule) {
 
 			if register.Size > 8 {
-				return nil, registers.State{}, fmt.Errorf("unexpected register size")
+				return registers.State{}, fmt.Errorf("unexpected register size")
 			}
 
 			out := make([]byte, 8)
 			n, err := stack.memory.Read(VirtualAddress(value.ToUint64()), out)
 			if err != nil {
-				return nil, registers.State{}, err
+				return registers.State{}, err
 			}
 			if n != 8 {
 				panic("should never happen")
@@ -413,7 +571,7 @@ func (stack *CallStack) unwind(
 			uintVal := uint64(0)
 			n, err = binary.Decode(out, binary.LittleEndian, &uintVal)
 			if err != nil {
-				return nil, registers.State{}, fmt.Errorf(
+				return registers.State{}, fmt.Errorf(
 					"failed to decode register value: %w",
 					err)
 			}
@@ -429,12 +587,12 @@ func (stack *CallStack) unwind(
 		} else {
 			previousState, err = previousState.WithValue(register, value)
 			if err != nil {
-				return nil, registers.State{}, fmt.Errorf(
+				return registers.State{}, fmt.Errorf(
 					"cannot set register: %w",
 					err)
 			}
 		}
 	}
 
-	return cfa, previousState, nil
+	return previousState, nil
 }

@@ -68,6 +68,9 @@ const (
 
 	// CFA = current RegisterId's value + offset
 	CFARegisterOffsetRule = RegisterRuleKind("cfa register offset")
+
+	// CFA = evaluated location
+	CFAExpressionRule = RegisterRuleKind("cfa expression")
 )
 
 type RegisterRule struct {
@@ -77,7 +80,7 @@ type RegisterRule struct {
 
 	Offset int64 // used by OffsetRule, ValueOffsetRule, and CFARegisterOffsetRule
 
-	// TODO expression data
+	ExpressionInstructions []byte
 }
 
 type UnwindRules struct {
@@ -128,6 +131,11 @@ func (rules *UnwindRules) SetCFARegisterOffset(id RegisterId, offset int64) {
 	rules.CanonicalFrameAddress.Kind = CFARegisterOffsetRule
 	rules.CanonicalFrameAddress.RegisterId = id
 	rules.CanonicalFrameAddress.Offset = offset
+}
+
+func (rules *UnwindRules) SetCFAExpression(instructions []byte) {
+	rules.CanonicalFrameAddress.Kind = CFAExpressionRule
+	rules.CanonicalFrameAddress.ExpressionInstructions = instructions
 }
 
 type cfiState struct {
@@ -231,6 +239,16 @@ func (state *cfiState) setCFAOffset(offset int64) error {
 	return nil
 }
 
+func (state *cfiState) setCFAExpression(instructions []byte) error {
+	top, err := state.top()
+	if err != nil {
+		return err
+	}
+
+	top.SetCFAExpression(instructions)
+	return nil
+}
+
 func (state *cfiState) advanceLoc(delta uint64) error {
 	state.location += elf.FileAddress(delta * state.CodeAlignmentFactor)
 	return nil
@@ -287,6 +305,24 @@ func (state *cfiState) setOffsetRule(
 		RegisterRule{
 			Kind:   kind,
 			Offset: offset,
+		})
+}
+
+func (state *cfiState) setExpressionRule(
+	regId RegisterId,
+	instructions []byte,
+	isValueExpr bool,
+) error {
+	kind := ExpressionRule
+	if isValueExpr {
+		kind = ValueExpressionRule
+	}
+
+	return state.setRegisterRule(
+		regId,
+		RegisterRule{
+			Kind:                   kind,
+			ExpressionInstructions: instructions,
 		})
 }
 
@@ -403,7 +439,17 @@ func (state *cfiState) executeInstruction(decode *framePointerDecoder) error {
 
 		return state.setCFAOffset(offset * state.DataAlignmentFactor)
 	case DW_CFA_def_cfa_expression:
-		return fmt.Errorf("dwarf expression not implemented")
+		length, err := decode.ULEB128(31)
+		if err != nil {
+			return fmt.Errorf("failed to decode expression length: %w", err)
+		}
+
+		instructions, err := decode.Bytes(int(length))
+		if err != nil {
+			return fmt.Errorf("failed to decode expression instructions: %w", err)
+		}
+
+		return state.setCFAExpression(instructions)
 	case DW_CFA_undefined:
 		id, err := decode.ULEB128(64)
 		if err != nil {
@@ -473,10 +519,26 @@ func (state *cfiState) executeInstruction(decode *framePointerDecoder) error {
 				Kind:       InRegisterRule,
 				RegisterId: RegisterId(other),
 			})
-	case DW_CFA_expression:
-		return fmt.Errorf("dwarf expression not implemented")
-	case DW_CFA_val_expression:
-		return fmt.Errorf("dwarf expression not implemented")
+	case DW_CFA_expression, DW_CFA_val_expression:
+		id, err := decode.ULEB128(64)
+		if err != nil {
+			return fmt.Errorf("failed to decode register id: %w", err)
+		}
+
+		length, err := decode.ULEB128(31)
+		if err != nil {
+			return fmt.Errorf("failed to decode offset: %w", err)
+		}
+
+		instructions, err := decode.Bytes(int(length))
+		if err != nil {
+			return fmt.Errorf("failed to decode expression instructions: %w", err)
+		}
+
+		return state.setExpressionRule(
+			RegisterId(id),
+			instructions,
+			opCodeArg == DW_CFA_val_expression)
 	case DW_CFA_restore_extended:
 		id, err := decode.ULEB128(64)
 		if err != nil {

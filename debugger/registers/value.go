@@ -1,6 +1,7 @@
 package registers
 
 import (
+	"encoding/binary"
 	"fmt"
 	"math"
 	"unsafe"
@@ -18,6 +19,8 @@ import (
 type Value interface {
 	Size() uintptr
 	IsFloat() bool
+
+	ToBytes() []byte
 
 	ToUint32() uint32
 	ToUint64() uint64
@@ -37,6 +40,22 @@ func (Uint128) Size() uintptr {
 
 func (Uint128) IsFloat() bool {
 	return false
+}
+
+func (u Uint128) ToBytes() []byte {
+	bytes := make([]byte, 16)
+
+	_, err := binary.Encode(bytes[:8], binary.LittleEndian, u.Low)
+	if err != nil {
+		panic(err)
+	}
+
+	_, err = binary.Encode(bytes[8:], binary.LittleEndian, u.High)
+	if err != nil {
+		panic(err)
+	}
+
+	return bytes
 }
 
 func (u Uint128) ToUint32() uint32 {
@@ -72,6 +91,17 @@ func (u Uint[T]) Size() uintptr {
 
 func (Uint[T]) IsFloat() bool {
 	return false
+}
+
+func (u Uint[T]) ToBytes() []byte {
+	bytes := make([]byte, u.Size())
+
+	_, err := binary.Encode(bytes, binary.LittleEndian, u.Value)
+	if err != nil {
+		panic(err)
+	}
+
+	return bytes
 }
 
 func (u Uint[T]) ToUint32() uint32 {
@@ -137,6 +167,17 @@ func (Int[T]) IsFloat() bool {
 	return false
 }
 
+func (i Int[T]) ToBytes() []byte {
+	bytes := make([]byte, i.Size())
+
+	_, err := binary.Encode(bytes, binary.LittleEndian, i.Value)
+	if err != nil {
+		panic(err)
+	}
+
+	return bytes
+}
+
 func (i Int[T]) ToUint32() uint32 {
 	return uint32(int64(i.Value))
 }
@@ -200,6 +241,17 @@ func (Float32) IsFloat() bool {
 	return true
 }
 
+func (f Float32) ToBytes() []byte {
+	bytes := make([]byte, 4)
+
+	_, err := binary.Encode(bytes, binary.LittleEndian, f)
+	if err != nil {
+		panic(err)
+	}
+
+	return bytes
+}
+
 func (f Float32) ToUint32() uint32 {
 	return math.Float32bits(float32(f))
 }
@@ -228,6 +280,17 @@ func (Float64) Size() uintptr {
 
 func (Float64) IsFloat() bool {
 	return true
+}
+
+func (f Float64) ToBytes() []byte {
+	bytes := make([]byte, 8)
+
+	_, err := binary.Encode(bytes, binary.LittleEndian, f)
+	if err != nil {
+		panic(err)
+	}
+
+	return bytes
 }
 
 func (f Float64) ToUint32() uint32 {

@@ -318,7 +318,7 @@ func (thread *ThreadState) resumeUntilAddressOrSignal(
 
 func (thread *ThreadState) maybeStepOverFunctionPrologue() error {
 	pc := thread.status.NextInstructionAddress
-	funcEntry, err := thread.LoadedElves.FunctionEntryContainingAddress(pc)
+	_, funcEntry, err := thread.LoadedElves.FunctionEntryContainingAddress(pc)
 	if err != nil {
 		return err
 	} else if funcEntry == nil {

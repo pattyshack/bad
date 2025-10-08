@@ -8,6 +8,7 @@ import (
 
 	"github.com/pattyshack/bad/debugger"
 	. "github.com/pattyshack/bad/debugger/common"
+	"github.com/pattyshack/bad/dwarf"
 )
 
 func backtrace(db *debugger.Debugger, args []string) error {
@@ -170,5 +171,44 @@ func printElves(db *debugger.Debugger, args []string) error {
 			fmt.Printf("  0x%016x: %s\n", file.LoadBias, file.FileName)
 		}
 	}
+	return nil
+}
+
+func printVariable(db *debugger.Debugger, args []string) error {
+	if len(args) == 0 {
+		fmt.Println("expected variable argument")
+		return nil
+	}
+
+	globalVar := db.LoadedElves.GlobalVariableEntryWithName(args[0])
+	if globalVar == nil {
+		fmt.Printf("global variable (%s) not found\n", args[0])
+		return nil
+	}
+
+	if db.CurrentThread().CallStack.CurrentFrame() == nil {
+		fmt.Printf("call stack frame currently unavailable")
+		return nil
+	}
+
+	location, err := globalVar.EvaluateLocation(
+		dwarf.DW_AT_location,
+		db.CurrentThread().CallStack.CurrentFrame(),
+		false, // in frame info
+		false) // push cfa
+	if err != nil {
+		fmt.Println("cannot locate global variable:", err)
+		return nil
+	}
+
+	data, err := db.CurrentThread().CallStack.CurrentFrame().ReadLocationData(
+		location,
+		8)
+	if err != nil {
+		fmt.Println("failed to read location data:", err)
+		return nil
+	}
+
+	fmt.Println("Value:", data)
 	return nil
 }

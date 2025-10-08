@@ -244,7 +244,7 @@ func newDetailedWaitingStatus(
 
 	status.NextInstructionAddress = pc
 
-	funcEntry, err := thread.LoadedElves.FunctionEntryContainingAddress(
+	_, funcEntry, err := thread.LoadedElves.FunctionEntryContainingAddress(
 		pc)
 	if err != nil {
 		return nil, false, err
