@@ -4,8 +4,10 @@ cmake_install.cmake
 Makefile
 
 anti_debugger
+blocks
 global_variable
 hello_world
+member_pointer
 memory
 multi_cu
 multi_threaded

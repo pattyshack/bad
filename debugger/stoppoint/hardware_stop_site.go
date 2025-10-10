@@ -33,7 +33,7 @@ func (pool *hardwareStopSitePool) Allocate(
 	if !siteType.IsHardware {
 		return nil, fmt.Errorf(
 			"%w. cannot allocate software stop site",
-			ErrInvalidArgument)
+			ErrInvalidInput)
 	}
 
 	err := siteType.Validate(address)
@@ -62,7 +62,7 @@ func (pool *hardwareStopSitePool) Allocate(
 
 	return nil, fmt.Errorf(
 		"%w. all available hardware stop sites occupied",
-		ErrInvalidArgument)
+		ErrInvalidInput)
 }
 
 func (pool *hardwareStopSitePool) deallocate(

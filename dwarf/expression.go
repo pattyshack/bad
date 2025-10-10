@@ -47,7 +47,7 @@ type ExpressionContext interface {
 
 	LoadBias() uint64 // virtual address
 
-	CurrentFunctionEntry() *DebugInfoEntry
+	BaseFrameFunctionEntry() *DebugInfoEntry
 
 	ProgramCounter() uint64 // virtual address
 
@@ -458,7 +458,7 @@ func (state *expressionState) breg(opCode Operation) error {
 }
 
 func (state *expressionState) fbreg() error {
-	entry := state.context.CurrentFunctionEntry()
+	entry := state.context.BaseFrameFunctionEntry()
 	if entry == nil {
 		return fmt.Errorf("current function debug info entry unavailable")
 	}

@@ -230,7 +230,7 @@ func (cmd stopPointCommands) setBreakPoint(kind int, args []string) error {
 
 	_, err = cmd.stopPoints.Set(resolver, siteType, true)
 	if err != nil {
-		if errors.Is(err, ErrInvalidArgument) {
+		if errors.Is(err, ErrInvalidInput) {
 			fmt.Println(err)
 			return nil
 		}
@@ -293,7 +293,7 @@ func (cmd stopPointCommands) setWatchPoint(args []string) error {
 
 	_, err = cmd.stopPoints.Set(resolver, siteType, true)
 	if err != nil {
-		if errors.Is(err, ErrInvalidArgument) {
+		if errors.Is(err, ErrInvalidInput) {
 			fmt.Println(err)
 			return nil
 		}
@@ -317,7 +317,7 @@ func (cmd stopPointCommands) remove(args []string) error {
 
 	err = cmd.stopPoints.Remove(id)
 	if err != nil {
-		if errors.Is(err, ErrInvalidArgument) {
+		if errors.Is(err, ErrInvalidInput) {
 			fmt.Println(err)
 			return nil
 		}

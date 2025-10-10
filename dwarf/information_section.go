@@ -615,7 +615,16 @@ func (section *InformationSection) GlobalVariableEntryWithName(
 				return nil
 			}
 
-			if entry.SpecIndex(DW_AT_location) != -1 { // has location
+			if entry.SpecIndex(DW_AT_location) == -1 { // doesn't have location
+				return nil
+			}
+
+			entryName, ok, err := entry.Name()
+			if err != nil {
+				return err
+			}
+
+			if ok && entryName == name {
 				result = entry
 				return earlyExitErr
 			}
@@ -633,4 +642,84 @@ func (section *InformationSection) GlobalVariableEntryWithName(
 	}
 
 	return nil
+}
+
+func (section *InformationSection) LocalVariableEntryWithName(
+	pc elf.FileAddress,
+	name string,
+) (
+	*DebugInfoEntry,
+	error,
+) {
+	localVariables, err := section.LocalVariableEntries(pc)
+	if err != nil {
+		return nil, err
+	}
+
+	return localVariables[name], nil
+}
+
+func (section *InformationSection) LocalVariableEntries(
+	pc elf.FileAddress,
+) (
+	map[string]*DebugInfoEntry,
+	error,
+) {
+	funcEntry, err := section.FunctionEntryContainingAddress(pc)
+	if err != nil {
+		return nil, err
+	}
+	if funcEntry == nil {
+		return nil, nil
+	}
+
+	result := map[string]*DebugInfoEntry{}
+	funcEntry.Visit(
+		func(entry *DebugInfoEntry) error {
+			ranges, err := entry.AddressRanges()
+			if err != nil {
+				return err
+			}
+			if !ranges.Contains(pc) {
+				return ErrSkipVisitingChildren
+			}
+
+			for _, child := range entry.Children {
+				if child.Tag == DW_TAG_variable ||
+					child.Tag == DW_TAG_formal_parameter {
+
+					name, ok, err := child.Name()
+					if err != nil {
+						return err
+					}
+
+					if ok {
+						result[name] = child
+					}
+				}
+			}
+
+			return nil
+		},
+		nil)
+
+	return result, nil
+}
+
+func (section *InformationSection) VariableEntryWithName(
+	pc elf.FileAddress,
+	name string,
+) (
+	*DebugInfoEntry,
+	error,
+) {
+	entry, err := section.LocalVariableEntryWithName(pc, name)
+	if err != nil {
+		return nil, err
+	}
+	if entry != nil {
+		return entry, nil
+	}
+
+	return section.GlobalVariableEntryWithName(name), nil
 }

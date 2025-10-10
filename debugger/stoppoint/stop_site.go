@@ -64,7 +64,7 @@ func (t StopSiteType) Validate(address VirtualAddress) error {
 	default:
 		return fmt.Errorf(
 			"%w. invalid hardware stop site mode (%s)",
-			ErrInvalidArgument,
+			ErrInvalidInput,
 			t.Mode)
 	}
 
@@ -73,14 +73,14 @@ func (t StopSiteType) Validate(address VirtualAddress) error {
 		if uint64(address)%uint64(t.WatchSize) != 0 {
 			return fmt.Errorf(
 				"%w. address (0x%x) not aligned with watch size (%d)",
-				ErrInvalidArgument,
+				ErrInvalidInput,
 				address,
 				t.WatchSize)
 		}
 	default:
 		return fmt.Errorf(
 			"%w. invalid watch size (%d)",
-			ErrInvalidArgument,
+			ErrInvalidInput,
 			t.WatchSize)
 	}
 
@@ -88,14 +88,14 @@ func (t StopSiteType) Validate(address VirtualAddress) error {
 		if t.Mode != ExecuteMode {
 			return fmt.Errorf(
 				"%w. invalid software stop site mode (%s)",
-				ErrInvalidArgument,
+				ErrInvalidInput,
 				t.Mode)
 		}
 
 		if t.WatchSize != 1 {
 			return fmt.Errorf(
 				"%w. invalid software stop site watch size (%d)",
-				ErrInvalidArgument,
+				ErrInvalidInput,
 				t.WatchSize)
 		}
 	}
@@ -197,7 +197,7 @@ func (allocator watchSiteAllocator) Allocate(
 	if !siteType.IsHardware {
 		return nil, fmt.Errorf(
 			"%w. watch point must use hardware stop site",
-			ErrInvalidArgument)
+			ErrInvalidInput)
 	}
 
 	return allocator.base.Allocate(address, siteType)
@@ -217,7 +217,7 @@ func (allocator breakSiteAllocator) Allocate(
 	if siteType.Mode != ExecuteMode || siteType.WatchSize != 1 {
 		return nil, fmt.Errorf(
 			"%w. break point must use execute mode stop site with watch size of 1",
-			ErrInvalidArgument)
+			ErrInvalidInput)
 	}
 
 	return allocator.base.Allocate(address, siteType)

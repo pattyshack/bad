@@ -66,11 +66,11 @@ func (files *SourceFiles) GetSnippet(
 	if focus <= 0 || focus > len(lines) {
 		return Snippet{}, fmt.Errorf(
 			"%w. out of bound focus line",
-			ErrInvalidArgument)
+			ErrInvalidInput)
 	}
 
 	if delta < 0 {
-		return Snippet{}, fmt.Errorf("%w. negative line delta", ErrInvalidArgument)
+		return Snippet{}, fmt.Errorf("%w. negative line delta", ErrInvalidInput)
 	}
 
 	startLine := focus - delta

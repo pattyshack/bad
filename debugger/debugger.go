@@ -7,6 +7,8 @@ import (
 	"os"
 	"os/exec"
 	"sort"
+	"strconv"
+	"strings"
 	"syscall"
 
 	"github.com/pattyshack/bad/debugger/catchpoint"
@@ -32,6 +34,8 @@ type Debugger struct {
 
 	VirtualMemory *memory.VirtualMemory
 	*memory.Disassembler
+
+	descriptorPool *DataDescriptorPool
 
 	stopSites stoppoint.StopSitePool
 
@@ -96,6 +100,7 @@ func newDebugger(
 		LoadedElves:             loadedElves,
 		SourceFiles:             NewSourceFiles(),
 		VirtualMemory:           mem,
+		descriptorPool:          NewDataDescriptorPool(),
 		StopSiteResolverFactory: stoppoint.NewStopSiteResolverFactory(loadedElves),
 		SyscallCatchPolicy:      catchpoint.NewSyscallCatchPolicy(),
 		rendezvousAddresses:     map[VirtualAddress]struct{}{},
@@ -284,7 +289,7 @@ func (db *Debugger) ListThreads() (*ThreadState, []*ThreadState) {
 func (db *Debugger) SetCurrentThread(tid int) error {
 	_, ok := db.threads[tid]
 	if !ok {
-		return fmt.Errorf("%w. no such thread", ErrInvalidArgument)
+		return fmt.Errorf("%w. no such thread", ErrInvalidInput)
 	}
 
 	db.currentTid = tid
@@ -566,9 +571,12 @@ func (db *Debugger) addThread(
 		Tid:          tid,
 		threadTracer: threadTracer,
 		Registers:    registers.New(threadTracer),
-		CallStack:    newCallStack(db.LoadedElves, db.VirtualMemory),
-		status:       newRunningStatus(tid),
-		Debugger:     db,
+		CallStack: newCallStack(
+			db.LoadedElves,
+			db.VirtualMemory,
+			db.descriptorPool),
+		status:   newRunningStatus(tid),
+		Debugger: db,
 	}
 	db.threads[tid] = thread
 
@@ -924,4 +932,102 @@ func (db *Debugger) focusOnImportantStatus(
 	}
 
 	return nil
+}
+
+func (db *Debugger) ListLocalVariables() ([]*TypedData, error) {
+	return db.CurrentThread().CallStack.ListLocalVariables()
+}
+
+func (db *Debugger) ReadVariable(name string) (*TypedData, error) {
+	return db.CurrentThread().CallStack.ReadVariable(name)
+}
+
+func (db *Debugger) ResolveVariableExpression(
+	expression string,
+) (
+	*TypedData,
+	error,
+) {
+	splitName := func(expr string) (string, string) {
+		idx := strings.IndexAny(expr, ".-[")
+		if idx == -1 {
+			return strings.TrimSpace(expr), ""
+		}
+		return strings.TrimSpace(expr[:idx]), strings.TrimSpace(expr[idx:])
+	}
+
+	splitIndex := func(expr string) (string, string) {
+		idx := strings.IndexAny(expr, "]")
+		if idx == -1 {
+			return "", strings.TrimSpace(expr)
+		}
+		return strings.TrimSpace(expr[:idx]), strings.TrimSpace(expr[idx+1:])
+	}
+
+	name, remaining := splitName(expression)
+	if len(name) == 0 {
+		return nil, fmt.Errorf("%w. empty variable name", ErrInvalidInput)
+	}
+
+	current, err := db.CurrentThread().CallStack.ReadVariable(name)
+	if err != nil {
+		return nil, err
+	}
+
+	for len(remaining) > 0 {
+		original := remaining
+		if strings.HasPrefix(remaining, ".") {
+			name, remaining = splitName(remaining[1:])
+			if len(name) == 0 {
+				return nil, fmt.Errorf(
+					"%w. empty member name (%s)",
+					ErrInvalidInput,
+					original)
+			}
+
+			current, err = current.FieldByName(name)
+			if err != nil {
+				return nil, fmt.Errorf("invalid operation (%s): %w", original, err)
+			}
+		} else if strings.HasPrefix(remaining, "->") {
+			name, remaining = splitName(remaining[2:])
+			if len(name) == 0 {
+				return nil, fmt.Errorf(
+					"%w. empty member name (%s)",
+					ErrInvalidInput,
+					original)
+			}
+
+			current, err = current.Dereference()
+			if err != nil {
+				return nil, fmt.Errorf("invalid operation (%s): %w", original, err)
+			}
+
+			current, err = current.FieldByName(name)
+			if err != nil {
+				return nil, fmt.Errorf("invalid operation (%s): %w", original, err)
+			}
+		} else if strings.HasPrefix(remaining, "[") {
+			var indexStr string
+			indexStr, remaining = splitIndex(remaining[1:])
+
+			index, err := strconv.ParseInt(indexStr, 10, 32)
+			if err != nil {
+				return nil, fmt.Errorf(
+					"%w. invalid index (%s): %s",
+					ErrInvalidInput,
+					original,
+					err)
+			}
+
+			current, err = current.Index(int(index))
+			if err != nil {
+				return nil, fmt.Errorf("invalid operation (%s): %w", original, err)
+			}
+		} else {
+			return nil, fmt.Errorf("invalid operations (%s)", original)
+		}
+	}
+
+	return current, nil
 }

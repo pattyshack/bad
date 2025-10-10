@@ -145,6 +145,24 @@ func initializeCommands(debugger *debugger.Debugger) command {
 		},
 	}
 
+	variableCmds := subCommands{
+		{
+			name:        "locals",
+			description: "            - print all local variable values",
+			command:     newFuncCmd(debugger, printLocalVariables),
+		},
+		{
+			name:        "read",
+			description: " <expression> - print the resolved value",
+			command:     newFuncCmd(debugger, resolveVariableExpression),
+		},
+		{
+			name:        "location",
+			description: " <name>   - print the variable's dwarf evaluated location",
+			command:     newFuncCmd(debugger, printVariableLocation),
+		},
+	}
+
 	return subCommands{
 		{
 			name: "continue",
@@ -220,30 +238,30 @@ func initializeCommands(debugger *debugger.Debugger) command {
 		},
 		{
 			name:        "print",
-			description: " - print current status",
+			description: "    - print current status",
 			command:     newFuncCmd(debugger, printStatus),
 		},
 		{
 			name:        "elves",
-			description: " - print loaded elves",
+			description: "    - print loaded elves",
 			command:     newFuncCmd(debugger, printElves),
 		},
 		{
 			name:        "thread",
-			description: " - commands for operating on threads",
+			description: "   - commands for operating on threads",
 			command:     threadCmds,
 		},
 		{
 			name:        "variable",
-			description: " <name> - read the global variable data",
-			command:     newFuncCmd(debugger, printVariable),
+			description: " - commands for operating on global/local variables",
+			command:     variableCmds,
 		},
 	}
 }
 
 type noOpCmd struct{}
 
-func (noOpCmd) run(db *debugger.Debugger, args []string) error {
+func (noOpCmd) run(args []string) error {
 	return nil
 }
 
@@ -356,7 +374,7 @@ func setThread(db *debugger.Debugger, args []string) error {
 	}
 
 	err = db.SetCurrentThread(int(tid))
-	if err != nil && errors.Is(err, ErrInvalidArgument) {
+	if err != nil && errors.Is(err, ErrInvalidInput) {
 		fmt.Println(err)
 		return nil
 	}

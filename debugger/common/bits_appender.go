@@ -3,7 +3,7 @@ package common
 type BitsAppender struct {
 	result []byte
 
-	// lower bits are free, upper numBufferedBits bits are filled.
+	// lower numBufferedBits are filled, upper bits are free.
 	buffer          byte
 	numBufferedBits int
 }
@@ -30,7 +30,7 @@ func (ba *BitsAppender) AppendSlice(s []byte, bitOffset int, bitSize int) {
 		}
 
 		if bitOffset > 0 {
-			b <<= bitOffset
+			b >>= bitOffset
 			bitOffset = 0
 		}
 
@@ -43,24 +43,24 @@ func (ba *BitsAppender) AppendSlice(s []byte, bitOffset int, bitSize int) {
 	}
 }
 
-// bits are left aligned (bits offset = 0)
+// bits are right aligned (bits offset = 0)
 func (ba *BitsAppender) appendByte(b byte, bitSize int) {
 	if bitSize == 8 && ba.numBufferedBits == 0 {
 		ba.result = append(ba.result, b)
 		return
 	}
 
-	// clear bottom bits
-	b >>= (8 - bitSize)
+	// clear upper bits
 	b <<= (8 - bitSize)
+	b >>= (8 - bitSize)
 
-	ba.buffer |= b >> ba.numBufferedBits
+	ba.buffer |= b << ba.numBufferedBits
 	ba.numBufferedBits += bitSize
 
 	if ba.numBufferedBits >= 8 {
 		ba.result = append(ba.result, ba.buffer)
 		ba.numBufferedBits -= 8
-		ba.buffer = b << (bitSize - ba.numBufferedBits)
+		ba.buffer = b >> (bitSize - ba.numBufferedBits)
 	}
 }
 

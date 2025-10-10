@@ -461,16 +461,42 @@ func (files *Files) FunctionEntriesWithName(
 	return result, nil
 }
 
-func (files *Files) GlobalVariableEntryWithName(
-	name string,
-) *dwarf.DebugInfoEntry {
+func (files *Files) LocalVariableEntries(
+	pc VirtualAddress,
+) (
+	map[string]*dwarf.DebugInfoEntry,
+	error,
+) {
 	for _, file := range files.loaded {
-		entry := file.GlobalVariableEntryWithName(name)
+		entry, err := file.LocalVariableEntries(pc)
+		if err != nil {
+			return nil, err
+		}
 		if entry != nil {
-			return entry
+			return entry, nil
 		}
 	}
-	return nil
+
+	return nil, nil
+}
+
+func (files *Files) VariableEntryWithName(
+	pc VirtualAddress,
+	name string,
+) (
+	*dwarf.DebugInfoEntry,
+	error,
+) {
+	for _, file := range files.loaded {
+		entry, err := file.VariableEntryWithName(pc, name)
+		if err != nil {
+			return nil, err
+		}
+		if entry != nil {
+			return entry, nil
+		}
+	}
+	return nil, nil
 }
 
 func (files *Files) LineEntryAt(

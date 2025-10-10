@@ -5,7 +5,7 @@ import (
 )
 
 var (
-	ErrInvalidArgument           = fmt.Errorf("invalid argument")
+	ErrInvalidInput              = fmt.Errorf("invalid input")
 	ErrProcessExited             = fmt.Errorf("process exited")
 	ErrRendezvousAddressNotFound = fmt.Errorf(
 		"dynamic linker rendezvous address not found")

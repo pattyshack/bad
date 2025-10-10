@@ -3,6 +3,7 @@ package debugger
 import (
 	"encoding/binary"
 	"fmt"
+	"sort"
 
 	. "github.com/pattyshack/bad/debugger/common"
 	"github.com/pattyshack/bad/debugger/loadedelves"
@@ -57,6 +58,13 @@ func (frame *CallFrame) CurrentFunctionEntry() *dwarf.DebugInfoEntry {
 	return frame.DebugInfoEntry
 }
 
+func (frame *CallFrame) BaseFrameFunctionEntry() *dwarf.DebugInfoEntry {
+	if frame.BaseFrame != nil {
+		return frame.BaseFrame.DebugInfoEntry
+	}
+	return frame.DebugInfoEntry
+}
+
 func (frame *CallFrame) ProgramCounter() uint64 {
 	return uint64(frame.BacktraceProgramCounter)
 }
@@ -96,7 +104,7 @@ func (frame *CallFrame) ReadMemory(
 
 func (frame *CallFrame) CanonicalFrameAddress() (uint64, error) {
 	cfa := frame.cfa
-	if cfa == nil && frame.BaseFrame != nil {
+	if frame.BaseFrame != nil {
 		cfa = frame.BaseFrame.cfa
 	}
 
@@ -107,7 +115,7 @@ func (frame *CallFrame) CanonicalFrameAddress() (uint64, error) {
 	return cfa.ToUint64(), nil
 }
 
-func (frame *CallFrame) ReadLocationData(
+func (frame *CallFrame) readLocationData(
 	location dwarf.Location,
 	byteSize int,
 ) (
@@ -166,6 +174,8 @@ type CallStack struct {
 
 	memory *memory.VirtualMemory
 
+	descriptorPool *DataDescriptorPool
+
 	currentPC VirtualAddress
 
 	// On update, initialized to the inner most inlined function frame with
@@ -179,13 +189,103 @@ type CallStack struct {
 func newCallStack(
 	files *loadedelves.Files,
 	vm *memory.VirtualMemory,
+	pool *DataDescriptorPool,
 ) *CallStack {
 	return &CallStack{
 		loadedElves:    files,
 		memory:         vm,
+		descriptorPool: pool,
 		currentPC:      0,
 		executingFrame: 0,
 	}
+}
+
+func (stack *CallStack) ListLocalVariables() ([]*TypedData, error) {
+	entries, err := stack.loadedElves.LocalVariableEntries(stack.currentPC)
+	if err != nil {
+		return nil, err
+	}
+
+	result := []*TypedData{}
+	for name, entry := range entries {
+		variable, err := stack.readVariable(name, entry)
+		if err != nil {
+			return nil, err
+		}
+
+		result = append(result, variable)
+	}
+
+	sort.Slice(
+		result,
+		func(i int, j int) bool {
+			return result[i].FormatPrefix < result[j].FormatPrefix
+		})
+	return result, nil
+}
+
+func (stack *CallStack) ReadVariable(
+	name string,
+) (
+	*TypedData,
+	error,
+) {
+	variable, err := stack.loadedElves.VariableEntryWithName(
+		stack.currentPC,
+		name)
+	if err != nil {
+		return nil, err
+	}
+	if variable == nil {
+		return nil, fmt.Errorf("%w. variable %s not found", ErrInvalidInput, name)
+	}
+
+	return stack.readVariable(name, variable)
+}
+
+func (stack *CallStack) readVariable(
+	name string,
+	variable *dwarf.DebugInfoEntry,
+) (
+	*TypedData,
+	error,
+) {
+	frame := stack.CurrentFrame()
+	if frame == nil {
+		return nil, fmt.Errorf("call stack frame unavailable")
+	}
+
+	location, err := variable.EvaluateLocation(
+		dwarf.DW_AT_location,
+		frame,
+		false, // in frame info
+		false) // push cfa
+	if err != nil {
+		return nil, fmt.Errorf("failed to evaluate location for %s: %w", name, err)
+	}
+
+	typeDie, err := variable.TypeEntry()
+	if err != nil {
+		return nil, fmt.Errorf("failed to get type info for %s: %w", name, err)
+	}
+
+	descriptor, err := stack.descriptorPool.Get(typeDie)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get descriptor for %s: %w", name, err)
+	}
+
+	data, err := frame.readLocationData(location, descriptor.ByteSize)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read location data for %s: %w", name, err)
+	}
+
+	return &TypedData{
+		VirtualMemory:  stack.memory,
+		FormatPrefix:   name,
+		DataDescriptor: descriptor,
+		Data:           data,
+		Location:       location,
+	}, nil
 }
 
 func (stack *CallStack) MaybeStepIntoInlinedFunction(
@@ -385,6 +485,10 @@ func (stack *CallStack) pushCallFrames(
 		die = nil
 
 		for _, child := range children {
+			if child.Tag != dwarf.DW_TAG_inlined_subroutine {
+				continue
+			}
+
 			name, _, err := child.Name()
 			if err != nil {
 				return false, err

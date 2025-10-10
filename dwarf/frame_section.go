@@ -402,7 +402,12 @@ func (parse *frameParser) frameDescriptionEntry(
 		return nil, fmt.Errorf("invalid initial location address: %w", err)
 	}
 
-	delta, err := parse.framePointer(cie.PointerEncoding)
+	// NOTE: delta (aka FDE address_range) uses the same offset encoding as
+	// regular cie.PointerEncoding, but always uses 0 (absptr) as base.
+	offsetEncoding := cie.PointerEncoding & 0x0f
+	deltaEncoding := DW_EH_PE_absptr | offsetEncoding
+
+	delta, err := parse.framePointer(deltaEncoding)
 	if err != nil {
 		return nil, fmt.Errorf("invalid address range: %w", err)
 	}

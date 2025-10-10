@@ -378,12 +378,12 @@ func (thread *ThreadState) stepUntilDifferentLine(stepOver bool) error {
 	for {
 		codeRanges := thread.CallStack.UnexecutedInlinedFunctionCodeRanges()
 		var endAddress *VirtualAddress
-		if len(codeRanges) > 0 {
+		if stepOver && len(codeRanges) > 0 {
 			high := codeRanges[len(codeRanges)-1].High
 			endAddress = &high
 		}
 
-		if mustAdvance || !stepOver {
+		if mustAdvance || endAddress == nil {
 			err := thread.stepInstruction(mustAdvance, stepOver)
 			if err != nil {
 				return err
@@ -391,8 +391,7 @@ func (thread *ThreadState) stepUntilDifferentLine(stepOver bool) error {
 		}
 		mustAdvance = false
 
-		if stepOver &&
-			endAddress != nil &&
+		if endAddress != nil &&
 			*endAddress != thread.status.NextInstructionAddress {
 
 			err := thread.resumeUntilAddressOrSignal(*endAddress)
@@ -413,7 +412,11 @@ func (thread *ThreadState) stepUntilDifferentLine(stepOver bool) error {
 
 		if line == nil {
 			return nil
-		} else if origLine == line || line.EndSequence {
+		} else if line.EndSequence {
+			continue
+		} else if origLine.FileEntry.Name == line.FileEntry.Name &&
+			origLine.Line == line.Line {
+
 			continue
 		} else {
 			return nil

@@ -261,6 +261,15 @@ func (entry *DebugInfoEntry) Name() (
 	return refEntry.Name()
 }
 
+func (entry *DebugInfoEntry) TypeEntry() (*DebugInfoEntry, error) {
+	ref, ok := entry.Reference(DW_AT_type)
+	if !ok {
+		return nil, fmt.Errorf("type entry not found")
+	}
+
+	return ref.Get()
+}
+
 func (entry *DebugInfoEntry) FileEntry() (*FileEntry, error) {
 	var idx uint64
 	var ok bool

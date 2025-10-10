@@ -954,22 +954,15 @@ func (DebuggerSuite) TestReadGlobalVariable(t *testing.T) {
 	expect.True(t, status.Stopped)
 	expect.Equal(t, SoftwareTrap, status.TrapKind)
 
-	globalVar := db.LoadedElves.GlobalVariableEntryWithName("g_int")
-	expect.NotNil(t, globalVar)
-
-	checkVar := func(value byte) {
-		location, err := globalVar.EvaluateLocation(
-			dwarf.DW_AT_location,
-			db.CurrentThread().CallStack.CurrentFrame(),
-			false, // in frame info
-			false) // push cfa
+	checkVar := func(expected uint64) {
+		globalVar, err := db.ResolveVariableExpression("g_int")
 		expect.Nil(t, err)
+		expect.Equal(t, UintKind, globalVar.Kind)
+		expect.Equal(t, 8, globalVar.ByteSize)
 
-		data, err := db.CurrentThread().CallStack.CurrentFrame().ReadLocationData(
-			location,
-			8)
+		val, err := globalVar.DecodeSimpleValue()
 		expect.Nil(t, err)
-		expect.Equal(t, []byte{value, 0, 0, 0, 0, 0, 0, 0}, data)
+		expect.Equal(t, expected, val.(uint64))
 	}
 
 	checkVar(0)
@@ -987,4 +980,122 @@ func (DebuggerSuite) TestReadGlobalVariable(t *testing.T) {
 	expect.Equal(t, SingleStepTrap, status.TrapKind)
 
 	checkVar(42)
+
+	data, err := db.ResolveVariableExpression("ptr->pets[0].name")
+	expect.Nil(t, err)
+	expect.True(t, data.IsCharPointer())
+
+	name, err := data.ReadCString()
+	expect.Nil(t, err)
+	expect.Equal(t, "Marshmallow", name)
+
+	data, err = db.ResolveVariableExpression("sy.pets[2].name[3]")
+	expect.Nil(t, err)
+	expect.Equal(t, CharKind, data.Kind)
+	expect.Equal(t, []byte("k"), data.Data)
+
+	data, err = db.ResolveVariableExpression("cats[1].age")
+	expect.Nil(t, err)
+	expect.Equal(t, IntKind, data.Kind)
+	expect.Equal(t, 4, data.ByteSize)
+
+	age, err := data.DecodeSimpleValue()
+	expect.Nil(t, err)
+	expect.Equal(t, 8, age.(int32))
+
+	data, err = db.ResolveVariableExpression("cats[1].color")
+	expect.Nil(t, err)
+	expect.Equal(t, IntKind, data.Kind)
+	expect.Equal(t, 4, data.ByteSize)
+
+	color, err := data.DecodeSimpleValue()
+	expect.Nil(t, err)
+	expect.Equal(t, 2, color.(int32))
+}
+
+func (DebuggerSuite) TestReadLocalVariable(t *testing.T) {
+	db, err := StartCmdAndAttachTo("test_targets/blocks")
+	expect.Nil(t, err)
+	defer db.Close()
+
+	_, err = db.BreakPoints.Set(
+		db.NewFunctionResolver("main"),
+		stoppoint.NewBreakSiteType(false),
+		true)
+	expect.Nil(t, err)
+
+	step := func() {
+		status, err := db.StepOver()
+		expect.Nil(t, err)
+		expect.True(t, status.Stopped)
+		expect.Equal(t, SingleStepTrap, status.TrapKind)
+	}
+
+	expects := func(expected int32) {
+		data, err := db.ResolveVariableExpression("i")
+		expect.Nil(t, err)
+		expect.Equal(t, IntKind, data.Kind)
+		expect.Equal(t, 4, data.ByteSize)
+
+		i, err := data.DecodeSimpleValue()
+		expect.Nil(t, err)
+		expect.Equal(t, expected, i.(int32))
+	}
+
+	status, err := db.ResumeAllUntilSignal()
+	expect.Nil(t, err)
+	expect.True(t, status.Stopped)
+	expect.Equal(t, SoftwareTrap, status.TrapKind)
+
+	step()
+	step()
+
+	expects(1)
+
+	step()
+	step()
+
+	expects(2)
+
+	step()
+	step()
+
+	expects(3)
+}
+
+func (DebuggerSuite) TestReadMemberPointer(t *testing.T) {
+	db, err := StartCmdAndAttachTo("test_targets/member_pointer")
+	expect.Nil(t, err)
+	defer db.Close()
+
+	_, err = db.BreakPoints.Set(
+		db.NewLineResolver("member_pointer.cpp", 12),
+		stoppoint.NewBreakSiteType(false),
+		true)
+	expect.Nil(t, err)
+
+	status, err := db.ResumeAllUntilSignal()
+	expect.Nil(t, err)
+	expect.True(t, status.Stopped)
+	expect.Equal(t, SoftwareTrap, status.TrapKind)
+
+	data, err := db.ResolveVariableExpression("data_ptr")
+	expect.Nil(t, err)
+	expect.Equal(t, MemberPointerKind, data.Kind)
+	expect.Equal(t, 8, data.ByteSize)
+
+	dataAddr, err := data.DecodeSimpleValue()
+	expect.Nil(t, err)
+	expect.NotEqual(t, 0, dataAddr)
+
+	data, err = db.ResolveVariableExpression("func_ptr")
+	expect.Nil(t, err)
+	expect.Equal(t, MemberPointerKind, data.Kind)
+	expect.Equal(t, 16, data.ByteSize)
+
+	funcAddr, err := data.DecodeSimpleValue()
+	expect.Nil(t, err)
+	expect.NotEqual(t, 0, funcAddr)
+	expect.NotEqual(t, dataAddr, funcAddr)
+
 }

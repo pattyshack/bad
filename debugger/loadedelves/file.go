@@ -230,14 +230,31 @@ func (file *File) FunctionEntriesWithName(
 	return file.Dwarf.FunctionEntriesWithName(name)
 }
 
-func (file *File) GlobalVariableEntryWithName(
-	name string,
-) *dwarf.DebugInfoEntry {
+func (file *File) LocalVariableEntries(
+	pc VirtualAddress,
+) (
+	map[string]*dwarf.DebugInfoEntry,
+	error,
+) {
 	if file.Dwarf == nil {
-		return nil
+		return nil, nil
 	}
 
-	return file.Dwarf.GlobalVariableEntryWithName(name)
+	return file.Dwarf.LocalVariableEntries(file.ToFileAddress(pc))
+}
+
+func (file *File) VariableEntryWithName(
+	pc VirtualAddress,
+	name string,
+) (
+	*dwarf.DebugInfoEntry,
+	error,
+) {
+	if file.Dwarf == nil {
+		return nil, nil
+	}
+
+	return file.Dwarf.VariableEntryWithName(file.ToFileAddress(pc), name)
 }
 
 func (file *File) LineEntryAt(

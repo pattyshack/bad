@@ -96,10 +96,7 @@ func (set *StopPointSet) Set(
 func (set *StopPointSet) Remove(id int64) error {
 	point, ok := set.allocated[id]
 	if !ok {
-		return fmt.Errorf(
-			"%w. stop point id (%d) not found",
-			ErrInvalidArgument,
-			id)
+		return fmt.Errorf("%w. stop point id (%d) not found", ErrInvalidInput, id)
 	}
 
 	for _, site := range point.sites {
