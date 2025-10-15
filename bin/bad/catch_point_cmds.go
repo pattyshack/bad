@@ -36,22 +36,24 @@ func (cmd syscallCatchPolicyCommands) SubCommands() subCommands {
 	}
 }
 
-func (cmd syscallCatchPolicyCommands) PrintCurrent(args []string) error {
+func (cmd syscallCatchPolicyCommands) PrintCurrent(args string) error {
 	fmt.Println(cmd.policy.String())
 	return nil
 }
 
-func (cmd syscallCatchPolicyCommands) CatchNone(args []string) error {
+func (cmd syscallCatchPolicyCommands) CatchNone(args string) error {
 	cmd.policy.CatchNone()
 	return nil
 }
 
-func (cmd syscallCatchPolicyCommands) CatchAll(args []string) error {
+func (cmd syscallCatchPolicyCommands) CatchAll(args string) error {
 	cmd.policy.CatchAll()
 	return nil
 }
 
-func (cmd syscallCatchPolicyCommands) CatchList(args []string) error {
+func (cmd syscallCatchPolicyCommands) CatchList(argsStr string) error {
+	args := splitAllArgs(argsStr)
+
 	if len(args) == 0 {
 		fmt.Println("no syscall name/number provided")
 		return nil

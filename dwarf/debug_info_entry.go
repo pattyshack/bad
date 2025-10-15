@@ -243,7 +243,7 @@ func (entry *DebugInfoEntry) Name() (
 			refIdx = idx
 		} else if spec.Attribute == DW_AT_abstract_origin {
 			// Current entry is an inlined function, the referenced entry is the
-			// function containing this inlined function.
+			// original function definition.
 			refIdx = idx
 		}
 	}
@@ -262,7 +262,20 @@ func (entry *DebugInfoEntry) Name() (
 }
 
 func (entry *DebugInfoEntry) TypeEntry() (*DebugInfoEntry, error) {
-	ref, ok := entry.Reference(DW_AT_type)
+	defEntry := entry
+
+	ref, ok := entry.Reference(DW_AT_abstract_origin)
+	if ok {
+		// Current entry is an inlined function variable, the referenced entry is
+		// the original function variable definition.
+		var err error
+		defEntry, err = ref.Get()
+		if err != nil {
+			return nil, fmt.Errorf("cannot get inlined variable definition: %w", err)
+		}
+	}
+
+	ref, ok = defEntry.Reference(DW_AT_type)
 	if !ok {
 		return nil, fmt.Errorf("type entry not found")
 	}
@@ -350,6 +363,71 @@ func (entry *DebugInfoEntry) ContainsAddress(
 	}
 
 	return addressRanges.Contains(address), nil
+}
+
+// NOTE: Finding the method definition from its declaration is extremely
+// awkward. The declaration has no attribute information on where to locate
+// the definition. Furthermore, inlined method creates another indirection.
+// We need to handle the following cases:
+//
+//  1. declaration = definition
+//  2. non-inlined method:
+//     decl <-(DW_AT_specification)- def
+//  3. inlined method:
+//     decl <-(DW_AT_specification)- partial def <-(DW_AT_abstract_origin)- def
+func (methodDeclaration *DebugInfoEntry) FindMethodDefinitionEntry() (
+	*DebugInfoEntry,
+	error,
+) {
+	indirections := map[*DebugInfoEntry]*DebugInfoEntry{}
+	err := methodDeclaration.InformationSection.ForEach(
+		func(entry *DebugInfoEntry) error {
+			if entry.Tag != DW_TAG_subprogram &&
+				entry.Tag != DW_TAG_inlined_subroutine {
+				return nil
+			}
+
+			ref, ok := entry.Reference(DW_AT_specification)
+			if ok {
+				linked, refErr := ref.Get()
+				if refErr != nil {
+					return refErr
+				}
+
+				indirections[linked] = entry
+			}
+
+			ref, ok = entry.Reference(DW_AT_abstract_origin)
+			if ok {
+				linked, refErr := ref.Get()
+				if refErr != nil {
+					return refErr
+				}
+
+				indirections[linked] = entry
+			}
+
+			return nil
+		})
+	if err != nil {
+		return nil, err
+	}
+
+	current := methodDeclaration
+	for current != nil {
+		addressRanges, err := current.AddressRanges()
+		if err != nil {
+			return nil, err
+		}
+
+		if len(addressRanges) != 0 {
+			return current, nil
+		}
+
+		current = indirections[current]
+	}
+
+	return nil, fmt.Errorf("method definition not found")
 }
 
 func (entry *DebugInfoEntry) Visit(enter ProcessFunc, exit ProcessFunc) error {

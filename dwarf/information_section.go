@@ -474,7 +474,7 @@ func (section *InformationSection) CompileUnitContainingAddress(
 	return nil, nil
 }
 
-func (section *InformationSection) FunctionEntryContainingAddress(
+func (section *InformationSection) FunctionDefinitionEntryContainingAddress(
 	address elf.FileAddress,
 ) (
 	*DebugInfoEntry,
@@ -558,7 +558,7 @@ func (section *InformationSection) GetLineEntriesByLine(
 	return result, nil
 }
 
-func (section *InformationSection) FunctionEntriesWithName(
+func (section *InformationSection) FunctionDefinitionEntriesWithName(
 	name string,
 ) (
 	[]*DebugInfoEntry,
@@ -665,7 +665,7 @@ func (section *InformationSection) LocalVariableEntries(
 	map[string]*DebugInfoEntry,
 	error,
 ) {
-	funcEntry, err := section.FunctionEntryContainingAddress(pc)
+	funcEntry, err := section.FunctionDefinitionEntryContainingAddress(pc)
 	if err != nil {
 		return nil, err
 	}

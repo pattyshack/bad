@@ -7,6 +7,7 @@ import (
 )
 
 type refCountStopSite struct {
+	pool     *refCountStopSitePool
 	refCount int
 	StopSite
 }
@@ -16,15 +17,7 @@ func (site *refCountStopSite) RefCount() int {
 }
 
 func (site *refCountStopSite) Deallocate() error {
-	site.refCount -= 1
-
-	if site.refCount == 0 {
-		return site.StopSite.Deallocate()
-	} else if site.refCount < 0 {
-		return fmt.Errorf("%s already deallocated", site.Key())
-	}
-
-	return nil
+	return site.pool.deallocate(site)
 }
 
 type refCountStopSitePool struct {
@@ -75,11 +68,27 @@ func (pool *refCountStopSitePool) Allocate(
 	}
 
 	site = &refCountStopSite{
+		pool:     pool,
 		refCount: 1,
 		StopSite: base,
 	}
 	pool.allocated[key] = site
 	return site, nil
+}
+
+func (pool *refCountStopSitePool) deallocate(
+	site *refCountStopSite,
+) error {
+	site.refCount -= 1
+
+	if site.refCount == 0 {
+		delete(pool.allocated, site.Key())
+		return site.StopSite.Deallocate()
+	} else if site.refCount < 0 {
+		return fmt.Errorf("%s already deallocated", site.Key())
+	}
+
+	return nil
 }
 
 func (pool *refCountStopSitePool) GetEnabledAt(

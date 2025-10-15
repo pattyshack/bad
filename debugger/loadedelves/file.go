@@ -204,7 +204,7 @@ func (file *File) SymbolSpans(address VirtualAddress) *elf.Symbol {
 	return nil
 }
 
-func (file *File) FunctionEntryContainingAddress(
+func (file *File) FunctionDefinitionEntryContainingAddress(
 	address VirtualAddress,
 ) (
 	*dwarf.DebugInfoEntry,
@@ -214,10 +214,11 @@ func (file *File) FunctionEntryContainingAddress(
 		return nil, nil
 	}
 
-	return file.Dwarf.FunctionEntryContainingAddress(file.ToFileAddress(address))
+	return file.Dwarf.FunctionDefinitionEntryContainingAddress(
+		file.ToFileAddress(address))
 }
 
-func (file *File) FunctionEntriesWithName(
+func (file *File) FunctionDefinitionEntriesWithName(
 	name string,
 ) (
 	[]*dwarf.DebugInfoEntry,
@@ -227,7 +228,7 @@ func (file *File) FunctionEntriesWithName(
 		return nil, nil
 	}
 
-	return file.Dwarf.FunctionEntriesWithName(name)
+	return file.Dwarf.FunctionDefinitionEntriesWithName(name)
 }
 
 func (file *File) LocalVariableEntries(

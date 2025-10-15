@@ -425,7 +425,7 @@ func (files *Files) SymbolsByName(name string) []*elf.Symbol {
 	return results
 }
 
-func (files *Files) FunctionEntryContainingAddress(
+func (files *Files) FunctionDefinitionEntryContainingAddress(
 	address VirtualAddress,
 ) (
 	*File,
@@ -433,7 +433,7 @@ func (files *Files) FunctionEntryContainingAddress(
 	error,
 ) {
 	for _, file := range files.loaded {
-		entry, err := file.FunctionEntryContainingAddress(address)
+		entry, err := file.FunctionDefinitionEntryContainingAddress(address)
 		if entry != nil || err != nil {
 			return file, entry, err
 		}
@@ -442,7 +442,7 @@ func (files *Files) FunctionEntryContainingAddress(
 	return nil, nil, nil
 }
 
-func (files *Files) FunctionEntriesWithName(
+func (files *Files) FunctionDefinitionEntriesWithName(
 	name string,
 ) (
 	[]*dwarf.DebugInfoEntry,
@@ -450,7 +450,7 @@ func (files *Files) FunctionEntriesWithName(
 ) {
 	result := []*dwarf.DebugInfoEntry{}
 	for _, file := range files.loaded {
-		entries, err := file.FunctionEntriesWithName(name)
+		entries, err := file.FunctionDefinitionEntriesWithName(name)
 		if err != nil {
 			return nil, err
 		}

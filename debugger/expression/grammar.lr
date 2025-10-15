@@ -1,0 +1,63 @@
+%token<Token> INTEGER_LITERAL FLOAT_LITERAL RUNE_LITERAL STRING_LITERAL
+%token<Token> TRUE FALSE
+%token<Token> IDENTIFIER DOLLAR_INTEGER
+
+%token<Token> DOT COMMA ARROW LPAREN RPAREN LBRACKET RBRACKET
+
+%start expression
+
+expression<Value> ->
+  = accessible_expr
+
+accessible_expr<Value> ->
+  = atom_expr |
+  = direct_access_expr |
+  = indirect_access_expr |
+  = index_expr |
+  = call_expr
+
+atom_expr<Value> ->
+  = literal_expr |
+  = named_expr |
+  = previous_result_expr |
+  = grouped_expr
+
+literal_expr<Value> ->
+  TRUE |
+  FALSE |
+  INTEGER_LITERAL |
+  FLOAT_LITERAL |
+  RUNE_LITERAL |
+  STRING_LITERAL
+
+named_expr<Value> -> IDENTIFIER
+
+previous_result_expr<Value> -> DOLLAR_INTEGER
+
+grouped_expr<Value> -> LPAREN expression RPAREN
+
+direct_access_expr<Value> -> accessible_expr DOT IDENTIFIER
+
+indirect_access_expr<Value> -> accessible_expr ARROW IDENTIFIER
+
+index_expr<Value> -> accessible_expr LBRACKET expression RBRACKET
+
+call_expr<Value> -> accessible_expr LPAREN arguments RPAREN
+
+arguments<Values> ->
+  empty_list: |
+  improper_list: non_empty_arguments COMMA |
+  = non_empty_arguments
+
+non_empty_arguments<Values> ->
+  new: expression |
+  append: non_empty_arguments COMMA expression
+
+%%lang_specs{
+go:
+  package: expression
+  value_types:
+    Token: "*TokenValue"
+    Value: "*TypedData"
+    Values: "[]*TypedData"
+}%%

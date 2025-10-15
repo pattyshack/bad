@@ -55,7 +55,7 @@ func (s DwarfSuite) TestFindFunction(t *testing.T) {
 	// XXX: gcc compiled multi_cu into a single compile unit ....
 	// expect.True(t, len(file.CompileUnits) > 1)
 
-	entries, err := file.FunctionEntriesWithName("main")
+	entries, err := file.FunctionDefinitionEntriesWithName("main")
 	expect.Nil(t, err)
 	expect.True(t, len(entries) > 0)
 

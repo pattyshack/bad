@@ -9,8 +9,8 @@ import (
 	"github.com/pattyshack/bad/dwarf"
 )
 
-func printLocalVariables(db *debugger.Debugger, args []string) error {
-	locals, err := db.ListLocalVariables()
+func printLocalVariables(db *debugger.Debugger, args string) error {
+	locals, err := db.ListInspectFrameLocalVariables()
 	if err != nil {
 		fmt.Println(err)
 		return nil
@@ -21,38 +21,57 @@ func printLocalVariables(db *debugger.Debugger, args []string) error {
 		fmt.Println("  (none)")
 	}
 
-	for _, local := range locals {
+	for idx, local := range locals {
+		if idx > 0 {
+			fmt.Println()
+		}
 		fmt.Println(local.Format("  "))
-		fmt.Println()
 	}
 
 	return nil
 }
 
-func resolveVariableExpression(db *debugger.Debugger, args []string) error {
-	if len(args) == 0 {
+func printEvaluatedResults(db *debugger.Debugger, args string) error {
+	fmt.Println("Evaluated results:")
+	if len(db.EvaluatedResults.List()) == 0 {
+		fmt.Println("  (none)")
+	}
+	for _, result := range db.EvaluatedResults.List() {
+		if result.Index > 0 {
+			fmt.Println()
+		}
+		fmt.Printf("  $%d: %s\n", result.Index, result.Expression)
+		fmt.Println(result.Format("    "))
+	}
+	return nil
+}
+
+func resolveVariableExpression(db *debugger.Debugger, args string) error {
+	args = strings.TrimSpace(args)
+	if args == "" {
 		fmt.Println("expected variable expression")
 		return nil
 	}
 
-	data, err := db.ResolveVariableExpression(strings.Join(args, " "))
+	data, err := db.ResolveVariableExpression(args)
 	if err != nil {
 		fmt.Println(err)
 		return nil
 	}
 
-	fmt.Println("Value:")
+	fmt.Printf("$%d: %s\n", data.Index, data.Expression)
 	fmt.Println(data.Format("  "))
 	return nil
 }
 
-func printVariableLocation(db *debugger.Debugger, args []string) error {
-	if len(args) == 0 {
+func printVariableLocation(db *debugger.Debugger, args string) error {
+	args = strings.TrimSpace(args)
+	if args == "" {
 		fmt.Println("expected variable name")
 		return nil
 	}
 
-	data, err := db.ReadVariable(args[0])
+	data, err := db.ReadInspectFrameVariableOrFunction(args)
 	if err != nil {
 		fmt.Println(err)
 		return nil

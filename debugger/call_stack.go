@@ -6,6 +6,7 @@ import (
 	"sort"
 
 	. "github.com/pattyshack/bad/debugger/common"
+	"github.com/pattyshack/bad/debugger/expression"
 	"github.com/pattyshack/bad/debugger/loadedelves"
 	"github.com/pattyshack/bad/debugger/memory"
 	"github.com/pattyshack/bad/debugger/registers"
@@ -170,11 +171,7 @@ func (frame *CallFrame) readLocationData(
 }
 
 type CallStack struct {
-	loadedElves *loadedelves.Files
-
-	memory *memory.VirtualMemory
-
-	descriptorPool *DataDescriptorPool
+	*ThreadState
 
 	currentPC VirtualAddress
 
@@ -182,33 +179,86 @@ type CallStack struct {
 	// low address < pc (or the outer most non-inlined function frame).
 	executingFrame int
 
+	// On update, reset to the executing frame.
+	currentInspectFrame int
+
 	// The first entry is the top of the call stack.
 	frames []*CallFrame
 }
 
-func newCallStack(
-	files *loadedelves.Files,
-	vm *memory.VirtualMemory,
-	pool *DataDescriptorPool,
-) *CallStack {
+func newCallStack(thread *ThreadState) *CallStack {
 	return &CallStack{
-		loadedElves:    files,
-		memory:         vm,
-		descriptorPool: pool,
-		currentPC:      0,
-		executingFrame: 0,
+		ThreadState:         thread,
+		currentPC:           0,
+		executingFrame:      0,
+		currentInspectFrame: 0,
 	}
 }
 
-func (stack *CallStack) ListLocalVariables() ([]*TypedData, error) {
-	entries, err := stack.loadedElves.LocalVariableEntries(stack.currentPC)
+func (stack *CallStack) InspectCalleeFrame() {
+	if stack.currentInspectFrame > stack.executingFrame {
+		stack.currentInspectFrame -= 1
+	}
+}
+
+func (stack *CallStack) InspectCallerFrame() {
+	if stack.currentInspectFrame < len(stack.frames)-1 {
+		stack.currentInspectFrame += 1
+	}
+}
+
+func (stack *CallStack) CurrentInspectFrame() *CallFrame {
+	if len(stack.frames) > 0 {
+		return stack.frames[stack.currentInspectFrame]
+	}
+	return nil
+}
+
+func (stack *CallStack) GetInspectFrameRegisterState() (
+	registers.State,
+	error,
+) {
+	if len(stack.frames) == 0 ||
+		stack.currentInspectFrame == stack.executingFrame {
+
+		return stack.Registers.GetState()
+	}
+
+	return stack.CurrentInspectFrame().Registers, nil
+}
+
+func (stack *CallStack) SetInspectFrameRegisterState(
+	state registers.State,
+) error {
+	if len(stack.frames) == 0 ||
+		stack.currentInspectFrame == stack.executingFrame {
+
+		return stack.Registers.SetState(state)
+	}
+
+	return fmt.Errorf(
+		"%w. cannot set register state for non-current backtraced frame",
+		ErrInvalidInput)
+}
+
+func (stack *CallStack) ListInspectFrameLocalVariables() (
+	[]*expression.TypedData,
+	error,
+) {
+	frame := stack.CurrentInspectFrame()
+	if frame == nil {
+		return nil, fmt.Errorf("call stack frame unavailable")
+	}
+
+	entries, err := stack.LoadedElves.LocalVariableEntries(
+		frame.Registers.ProgramCounter())
 	if err != nil {
 		return nil, err
 	}
 
-	result := []*TypedData{}
+	result := []*expression.TypedData{}
 	for name, entry := range entries {
-		variable, err := stack.readVariable(name, entry)
+		variable, err := stack.readVariable(frame, name, entry)
 		if err != nil {
 			return nil, err
 		}
@@ -224,35 +274,49 @@ func (stack *CallStack) ListLocalVariables() ([]*TypedData, error) {
 	return result, nil
 }
 
-func (stack *CallStack) ReadVariable(
+func (stack *CallStack) ReadInspectFrameVariableOrFunction(
 	name string,
 ) (
-	*TypedData,
+	*expression.TypedData,
 	error,
 ) {
-	variable, err := stack.loadedElves.VariableEntryWithName(
-		stack.currentPC,
+	frame := stack.CurrentInspectFrame()
+	if frame == nil {
+		return nil, fmt.Errorf("call stack frame unavailable")
+	}
+
+	variable, err := stack.LoadedElves.VariableEntryWithName(
+		frame.Registers.ProgramCounter(),
 		name)
 	if err != nil {
 		return nil, err
 	}
-	if variable == nil {
+	if variable != nil {
+		return stack.readVariable(frame, name, variable)
+	}
+
+	functionData, err := stack.descriptorPool.GetFunction(name)
+	if err != nil {
+		return nil, err
+	}
+
+	if functionData == nil {
 		return nil, fmt.Errorf("%w. variable %s not found", ErrInvalidInput, name)
 	}
 
-	return stack.readVariable(name, variable)
+	return functionData, err
 }
 
 func (stack *CallStack) readVariable(
+	frame *CallFrame,
 	name string,
 	variable *dwarf.DebugInfoEntry,
 ) (
-	*TypedData,
+	*expression.TypedData,
 	error,
 ) {
-	frame := stack.CurrentFrame()
-	if frame == nil {
-		return nil, fmt.Errorf("call stack frame unavailable")
+	if frame.BaseFrame != nil {
+		frame = frame.BaseFrame
 	}
 
 	location, err := variable.EvaluateLocation(
@@ -269,21 +333,44 @@ func (stack *CallStack) readVariable(
 		return nil, fmt.Errorf("failed to get type info for %s: %w", name, err)
 	}
 
-	descriptor, err := stack.descriptorPool.Get(typeDie)
+	descriptor, err := stack.descriptorPool.GetVariableDescriptor(typeDie)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get descriptor for %s: %w", name, err)
 	}
 
-	data, err := frame.readLocationData(location, descriptor.ByteSize)
-	if err != nil {
-		return nil, fmt.Errorf("failed to read location data for %s: %w", name, err)
+	var address VirtualAddress
+	if len(location) == 1 && location[0].Kind == dwarf.AddressLocation {
+		address = VirtualAddress(location[0].Value)
+	} else {
+		data, err := frame.readLocationData(location, descriptor.ByteSize)
+		if err != nil {
+			return nil, fmt.Errorf(
+				"failed to read location data for %s: %w",
+				name,
+				err)
+		}
+
+		address, err = stack.InvokeMalloc(descriptor.ByteSize)
+		if err != nil {
+			return nil, fmt.Errorf("failed to malloc for variable: %w", err)
+		}
+
+		n, err := stack.VirtualMemory.Write(address, data)
+		if err != nil {
+			return nil, fmt.Errorf("failed to copy variable into memory: %w", err)
+		}
+		if n != len(data) {
+			return nil, fmt.Errorf("failed to copy all variable data into memory")
+		}
 	}
 
-	return &TypedData{
-		VirtualMemory:  stack.memory,
+	return &expression.TypedData{
+		VirtualMemory:  stack.VirtualMemory,
 		FormatPrefix:   name,
 		DataDescriptor: descriptor,
-		Data:           data,
+		Address:        address,
+		BitOffset:      0,
+		BitSize:        8 * descriptor.ByteSize,
 		Location:       location,
 	}, nil
 }
@@ -296,6 +383,7 @@ func (stack *CallStack) MaybeStepIntoInlinedFunction(
 ) {
 	if stack.executingFrame > 0 {
 		stack.executingFrame -= 1
+		stack.currentInspectFrame = stack.executingFrame
 
 		stepInStatus := newInlinedStepInStatus(status)
 		err := stack.populateSourceInfo(stepInStatus)
@@ -307,7 +395,7 @@ func (stack *CallStack) MaybeStepIntoInlinedFunction(
 	return nil, nil
 }
 
-func (stack *CallStack) CurrentFrame() *CallFrame {
+func (stack *CallStack) ExecutingFrame() *CallFrame {
 	if len(stack.frames) > 0 {
 		return stack.frames[stack.executingFrame]
 	}
@@ -335,9 +423,8 @@ func (stack *CallStack) UnexecutedInlinedFunctionCodeRanges() AddressRanges {
 
 func (stack *CallStack) Update(
 	status *ThreadStatus,
-	currentState registers.State,
 ) error {
-	err := stack.updateStack(status.NextInstructionAddress, currentState)
+	err := stack.updateStack(status.NextInstructionAddress)
 	if err != nil {
 		return err
 	}
@@ -354,7 +441,7 @@ func (stack *CallStack) populateSourceInfo(status *ThreadStatus) error {
 	} else {
 		// In case pc is not in any function, but still have line info for whatever
 		// reason.
-		entry, err := stack.loadedElves.LineEntryAt(status.NextInstructionAddress)
+		entry, err := stack.LoadedElves.LineEntryAt(status.NextInstructionAddress)
 		if err != nil {
 			return err
 		}
@@ -369,14 +456,19 @@ func (stack *CallStack) populateSourceInfo(status *ThreadStatus) error {
 
 func (stack *CallStack) updateStack(
 	pc VirtualAddress,
-	currentState registers.State,
 ) error {
 	if pc == stack.currentPC {
 		return nil
 	}
 
+	currentState, err := stack.Registers.GetState()
+	if err != nil {
+		return err
+	}
+
 	stack.currentPC = pc
 	stack.executingFrame = 0
+	stack.currentInspectFrame = 0
 	stack.frames = []*CallFrame{}
 
 	for {
@@ -388,7 +480,7 @@ func (stack *CallStack) updateStack(
 			break
 		}
 
-		rules, err := stack.loadedElves.ComputeUnwindRulesAt(pc)
+		rules, err := stack.LoadedElves.ComputeUnwindRulesAt(pc)
 		if err != nil {
 			return err
 		}
@@ -417,6 +509,7 @@ func (stack *CallStack) updateStack(
 	for idx, frame := range stack.frames {
 		if !frame.IsInlined() || frame.CodeRanges[0].Low < stack.currentPC {
 			stack.executingFrame = idx
+			stack.currentInspectFrame = idx
 			break
 		}
 	}
@@ -433,18 +526,19 @@ func (stack *CallStack) pushCallFrames(
 ) {
 	// NOTE: for unwinded frames, the pc does not point to the start of an
 	// instruction. Look up the line table for the start of the instruction.
-	line, err := stack.loadedElves.LineEntryAt(pc)
+	line, err := stack.LoadedElves.LineEntryAt(pc)
 	if err != nil {
 		return false, err
 	}
 	if line != nil {
-		pc, err = stack.loadedElves.LineEntryToVirtualAddress(line)
+		pc, err = stack.LoadedElves.LineEntryToVirtualAddress(line)
 		if err != nil {
 			return false, err
 		}
 	}
 
-	loaded, die, err := stack.loadedElves.FunctionEntryContainingAddress(pc)
+	loaded, die, err := stack.LoadedElves.
+		FunctionDefinitionEntryContainingAddress(pc)
 	if err != nil {
 		return false, err
 	}
@@ -458,7 +552,7 @@ func (stack *CallStack) pushCallFrames(
 		return false, err
 	}
 
-	codeRanges, err := stack.loadedElves.ToVirtualAddressRanges(die)
+	codeRanges, err := stack.LoadedElves.ToVirtualAddressRanges(die)
 	if err != nil {
 		return false, err
 	}
@@ -475,7 +569,7 @@ func (stack *CallStack) pushCallFrames(
 		CodeRanges:              codeRanges,
 		BacktraceProgramCounter: pc,
 		Registers:               state,
-		memory:                  stack.memory,
+		memory:                  stack.VirtualMemory,
 	}
 
 	currentFrame := baseFrame
@@ -494,7 +588,7 @@ func (stack *CallStack) pushCallFrames(
 				return false, err
 			}
 
-			codeRanges, err := stack.loadedElves.ToVirtualAddressRanges(child)
+			codeRanges, err := stack.LoadedElves.ToVirtualAddressRanges(child)
 			if err != nil {
 				return false, err
 			}
@@ -518,7 +612,7 @@ func (stack *CallStack) pushCallFrames(
 					CodeRanges:              codeRanges,
 					BacktraceProgramCounter: pc,
 					Registers:               state,
-					memory:                  stack.memory,
+					memory:                  stack.VirtualMemory,
 				}
 				frames = append(frames, currentFrame)
 
@@ -528,7 +622,7 @@ func (stack *CallStack) pushCallFrames(
 		}
 	}
 
-	entry, err := stack.loadedElves.LineEntryAt(pc)
+	entry, err := stack.LoadedElves.LineEntryAt(pc)
 	if err != nil {
 		return false, err
 	}
@@ -664,7 +758,7 @@ func (stack *CallStack) unwind(
 			}
 
 			out := make([]byte, 8)
-			n, err := stack.memory.Read(VirtualAddress(value.ToUint64()), out)
+			n, err := stack.VirtualMemory.Read(VirtualAddress(value.ToUint64()), out)
 			if err != nil {
 				return registers.State{}, err
 			}

@@ -1,11 +1,7 @@
 #include <cstdint>
+#include <iostream>
 
 std::uint64_t g_int = 0;
-
-int main() {
-  g_int = 1;
-  g_int = 42;
-}
 
 struct cat {
   const char* name;
@@ -18,11 +14,25 @@ struct person {
   int age;
   cat *pets;
   int num_pets;
+
+  void pet_cats() {
+    for (int i = 0; i < num_pets; ++i) {
+      std::cout << name << " pets " << pets[i].name << "\n";
+    }
+  }
 };
+
 
 cat marshmallow { "Marshmallow", 4 , 1 };
 cat lexical_cat { "Lexical Cat", 8 , 2 };
 cat milkshake { "Milkshake", 4 , 3 };
 cat cats[] = { marshmallow, lexical_cat, milkshake };
 person sy { "Sy", 33, cats, 3 };
-person* ptr = &sy;
+person* someone = &sy;
+
+int main() {
+  g_int = 1;
+  g_int = 42;
+
+  someone->pet_cats();
+}

@@ -111,14 +111,14 @@ func (resolver *FunctionStopSiteResolver) resolveAddresses() (
 ) {
 	prologueBodies := map[VirtualAddress]VirtualAddress{}
 
-	dwarfInfoEntries, err := resolver.LoadedElves.FunctionEntriesWithName(
+	funcDefs, err := resolver.LoadedElves.FunctionDefinitionEntriesWithName(
 		resolver.Name)
 	if err != nil {
 		return nil, err
 	}
 
-	for _, info := range dwarfInfoEntries {
-		addressRanges, err := info.AddressRanges()
+	for _, funcDef := range funcDefs {
+		addressRanges, err := funcDef.AddressRanges()
 		if err != nil {
 			return nil, err
 		}
@@ -128,13 +128,13 @@ func (resolver *FunctionStopSiteResolver) resolveAddresses() (
 		}
 
 		lowPC, err := resolver.LoadedElves.ToVirtualAddress(
-			info.File.File,
+			funcDef.File.File,
 			addressRanges[0].Low)
 		if err != nil {
 			return nil, err
 		}
 
-		if info.Tag == dwarf.DW_TAG_inlined_subroutine {
+		if funcDef.Tag == dwarf.DW_TAG_inlined_subroutine {
 			// Inlined function have no prologue.
 			prologueBodies[lowPC] = lowPC
 		} else {
@@ -241,17 +241,17 @@ func (resolver *LineStopSiteResolver) resolveAddresses() (
 			return nil, err
 		}
 
-		// NOTE: funcEntry is the outer most function entry
-		_, funcEntry, err := resolver.LoadedElves.FunctionEntryContainingAddress(
-			lineAddress)
+		// NOTE: funcDef is the outer most function entry
+		_, funcDef, err := resolver.LoadedElves.
+			FunctionDefinitionEntryContainingAddress(lineAddress)
 		if err != nil {
 			return nil, err
 		}
-		if funcEntry == nil {
+		if funcDef == nil {
 			return nil, fmt.Errorf("no function entry associated with line entry")
 		}
 
-		addressRanges, err := funcEntry.AddressRanges()
+		addressRanges, err := funcDef.AddressRanges()
 		if err != nil {
 			return nil, err
 		}

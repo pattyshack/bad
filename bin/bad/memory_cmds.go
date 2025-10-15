@@ -3,26 +3,30 @@ package main
 import (
 	"fmt"
 	"strconv"
+	"strings"
 
 	"github.com/pattyshack/bad/debugger"
 	. "github.com/pattyshack/bad/debugger/common"
 )
 
-func readMemory(db *debugger.Debugger, args []string) error {
-	if len(args) == 0 {
+func readMemory(db *debugger.Debugger, argsStr string) error {
+	addrStr, sizeStr := splitArg(argsStr)
+	sizeStr = strings.TrimSpace(sizeStr)
+
+	if addrStr == "" {
 		fmt.Println("failed to read from memory. address not specified")
 		return nil
 	}
 
-	addr, err := strconv.ParseUint(args[0], 0, 64)
+	addr, err := strconv.ParseUint(addrStr, 0, 64)
 	if err != nil {
 		fmt.Println("failed to parse memory address:", err)
 		return nil
 	}
 
 	size := 32
-	if len(args) > 1 {
-		val, err := strconv.ParseInt(args[1], 0, 32)
+	if len(sizeStr) > 0 {
+		val, err := strconv.ParseInt(sizeStr, 0, 32)
 		if err != nil {
 			fmt.Println("failed to parse output size:", err)
 			return nil
@@ -69,7 +73,8 @@ func readMemory(db *debugger.Debugger, args []string) error {
 	return nil
 }
 
-func writeMemory(db *debugger.Debugger, args []string) error {
+func writeMemory(db *debugger.Debugger, argsStr string) error {
+	args := splitAllArgs(argsStr)
 	if len(args) == 0 {
 		fmt.Println("failed to write to memory. address not specified.")
 		return nil

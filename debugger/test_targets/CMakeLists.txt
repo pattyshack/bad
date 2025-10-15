@@ -17,6 +17,7 @@ endfunction()
 
 add_test_cpp_target(anti_debugger)
 add_test_cpp_target(blocks)
+add_test_cpp_target(expr)
 add_test_cpp_target(global_variable)
 add_test_cpp_target(hello_world)
 add_test_cpp_target(member_pointer)

@@ -16,8 +16,33 @@ import (
 	. "github.com/pattyshack/bad/debugger/common"
 )
 
+func splitArg(args string) (string, string) {
+	parts := strings.SplitN(strings.TrimSpace(args), " ", 2)
+
+	first := parts[0]
+	remaining := ""
+	if len(parts) > 1 {
+		remaining = parts[1]
+	}
+
+	return first, remaining
+}
+
+func splitAllArgs(argsStr string) []string {
+	args := []string{}
+	remaining := argsStr
+	for len(remaining) > 0 {
+		var arg string
+		arg, remaining = splitArg(remaining)
+		if len(arg) > 0 {
+			args = append(args, arg)
+		}
+	}
+	return args
+}
+
 type command interface {
-	run([]string) error
+	run(string) error
 }
 
 type namedCommand struct {
@@ -28,19 +53,21 @@ type namedCommand struct {
 
 type subCommands []namedCommand
 
-func (cmds subCommands) run(args []string) error {
-	if len(args) == 0 || strings.HasPrefix("help", args[0]) {
+func (cmds subCommands) run(args string) error {
+	name, remaining := splitArg(args)
+
+	if name == "" || strings.HasPrefix("help", name) {
 		cmds.printAvailableCommands()
 		return nil
 	}
 
 	for _, cmd := range cmds {
-		if strings.HasPrefix(cmd.name, args[0]) {
-			return cmd.run(args[1:])
+		if strings.HasPrefix(cmd.name, name) {
+			return cmd.run(remaining)
 		}
 	}
 
-	fmt.Println("Invalid subcommand:", strings.Join(args, " "))
+	fmt.Println("Invalid subcommand:", args)
 	return nil
 }
 
@@ -51,7 +78,7 @@ func (cmds subCommands) printAvailableCommands() {
 	}
 }
 
-type cmdFunc func(*debugger.Debugger, []string) error
+type cmdFunc func(*debugger.Debugger, string) error
 
 type funcCmd struct {
 	debugger *debugger.Debugger
@@ -65,13 +92,13 @@ func newFuncCmd(debugger *debugger.Debugger, f cmdFunc) funcCmd {
 	}
 }
 
-func (cmd funcCmd) run(args []string) error {
+func (cmd funcCmd) run(args string) error {
 	return cmd.cmdFunc(cmd.debugger, args)
 }
 
-type runCmd func([]string) error
+type runCmd func(string) error
 
-func (f runCmd) run(args []string) error {
+func (f runCmd) run(args string) error {
 	return f(args)
 }
 
@@ -145,21 +172,27 @@ func initializeCommands(debugger *debugger.Debugger) command {
 		},
 	}
 
-	variableCmds := subCommands{
+	expressionCmds := subCommands{
 		{
 			name:        "locals",
-			description: "            - print all local variable values",
+			description: "                - print all local variable values",
 			command:     newFuncCmd(debugger, printLocalVariables),
 		},
 		{
-			name:        "read",
-			description: " <expression> - print the resolved value",
+			name:        "results",
+			description: "               - print previously evaluated results",
+			command:     newFuncCmd(debugger, printEvaluatedResults),
+		},
+		{
+			name:        "evaluate",
+			description: " <expression> - print the evaluated value",
 			command:     newFuncCmd(debugger, resolveVariableExpression),
 		},
 		{
-			name:        "location",
-			description: " <name>   - print the variable's dwarf evaluated location",
-			command:     newFuncCmd(debugger, printVariableLocation),
+			name: "locate",
+			description: " <name>         " +
+				"- print the variable's dwarf evaluated location",
+			command: newFuncCmd(debugger, printVariableLocation),
 		},
 	}
 
@@ -167,10 +200,8 @@ func initializeCommands(debugger *debugger.Debugger) command {
 		{
 			name: "continue",
 			description: ":\n" +
-				"    continue\n" +
-				"      - resume all process threads\n" +
-				"    continue current\n" +
-				"      - resume only the current thread",
+				"    continue         - resume all process threads\n" +
+				"    continue current - resume only the current thread",
 			command: newFuncCmd(debugger, resume),
 		},
 		{
@@ -228,53 +259,57 @@ func initializeCommands(debugger *debugger.Debugger) command {
 		{
 			name: "backtrace",
 			description: ":\n" +
-				"    backtrace\n" +
-				"      - print backtrace without register values\n" +
-				"    backtrace <all|frame>\n" +
-				"      - print backtrace with general register values at <frame>\n" +
-				"    backtrace <all|frame> <all|register>\n" +
-				"      - print backtrace with selected <register> at <frame>",
+				"    backtrace      - print backtrace\n" +
+				"    backtrace up   - inspect callee frame and print backtrace\n" +
+				"    backtrace down - inspect caller frame and print backtrace",
 			command: newFuncCmd(debugger, backtrace),
 		},
 		{
 			name:        "print",
-			description: "    - print current status",
+			description: "       - print current thread status",
 			command:     newFuncCmd(debugger, printStatus),
 		},
 		{
-			name:        "elves",
-			description: "    - print loaded elves",
+			name:        "loadedelves",
+			description: " - print loaded elves",
 			command:     newFuncCmd(debugger, printElves),
 		},
 		{
 			name:        "thread",
-			description: "   - commands for operating on threads",
+			description: "      - commands for operating on threads",
 			command:     threadCmds,
 		},
 		{
-			name:        "variable",
-			description: " - commands for operating on global/local variables",
-			command:     variableCmds,
+			name:        "expression",
+			description: "  - commands for operating on global/local variables",
+			command:     expressionCmds,
 		},
 	}
 }
 
 type noOpCmd struct{}
 
-func (noOpCmd) run(args []string) error {
+func (noOpCmd) run(args string) error {
 	return nil
 }
 
-func resume(db *debugger.Debugger, args []string) error {
+func resume(db *debugger.Debugger, args string) error {
+	args = strings.TrimSpace(args)
+
 	resume := db.ResumeAllUntilSignal
-	if len(args) > 0 && strings.HasPrefix("current", args[0]) {
-		resume = db.ResumeCurrentUntilSignal
+	if args != "" {
+		if strings.HasPrefix("current", args) {
+			resume = db.ResumeCurrentUntilSignal
+		} else {
+			fmt.Println("unexpected argument:", args)
+			return nil
+		}
 	}
 
 	status, err := resume()
 	if err != nil {
 		if errors.Is(err, ErrProcessExited) {
-			fmt.Println("cannot resume. process", db.Pid, "exited")
+			fmt.Println(err)
 			return nil
 		}
 		return err
@@ -284,11 +319,11 @@ func resume(db *debugger.Debugger, args []string) error {
 	return nil
 }
 
-func stepOut(db *debugger.Debugger, args []string) error {
+func stepOut(db *debugger.Debugger, args string) error {
 	status, err := db.StepOut()
 	if err != nil {
 		if errors.Is(err, ErrProcessExited) {
-			fmt.Println("cannot resume. process", db.Pid, "exited")
+			fmt.Println(err)
 			return nil
 		}
 		return err
@@ -298,11 +333,11 @@ func stepOut(db *debugger.Debugger, args []string) error {
 	return nil
 }
 
-func stepOver(db *debugger.Debugger, args []string) error {
+func stepOver(db *debugger.Debugger, args string) error {
 	status, err := db.StepOver()
 	if err != nil {
 		if errors.Is(err, ErrProcessExited) {
-			fmt.Println("cannot resume. process", db.Pid, "exited")
+			fmt.Println(err)
 			return nil
 		}
 		return err
@@ -312,11 +347,11 @@ func stepOver(db *debugger.Debugger, args []string) error {
 	return nil
 }
 
-func stepIn(db *debugger.Debugger, args []string) error {
+func stepIn(db *debugger.Debugger, args string) error {
 	status, err := db.StepIn()
 	if err != nil {
 		if errors.Is(err, ErrProcessExited) {
-			fmt.Println("cannot resume. process", db.Pid, "exited")
+			fmt.Println(err)
 			return nil
 		}
 		return err
@@ -326,11 +361,11 @@ func stepIn(db *debugger.Debugger, args []string) error {
 	return nil
 }
 
-func stepInstruction(db *debugger.Debugger, args []string) error {
+func stepInstruction(db *debugger.Debugger, args string) error {
 	status, err := db.StepInstruction()
 	if err != nil {
 		if errors.Is(err, ErrProcessExited) {
-			fmt.Println("cannot step instruction. process", db.Pid, "exited")
+			fmt.Println(err)
 			return nil
 		}
 		return err
@@ -340,7 +375,7 @@ func stepInstruction(db *debugger.Debugger, args []string) error {
 	return nil
 }
 
-func listThreads(db *debugger.Debugger, args []string) error {
+func listThreads(db *debugger.Debugger, args string) error {
 	current, threads := db.ListThreads()
 	for _, thread := range threads {
 		prefix := " "
@@ -361,13 +396,15 @@ func listThreads(db *debugger.Debugger, args []string) error {
 	return nil
 }
 
-func setThread(db *debugger.Debugger, args []string) error {
-	if len(args) != 1 {
+func setThread(db *debugger.Debugger, args string) error {
+	args = strings.TrimSpace(args)
+
+	if args == "" {
 		fmt.Println("Invalid argument(s). Expected <tid>")
 		return nil
 	}
 
-	tid, err := strconv.ParseInt(args[0], 10, 32)
+	tid, err := strconv.ParseInt(args, 10, 32)
 	if err != nil {
 		fmt.Println("Invalid tid:", err)
 		return nil
@@ -471,19 +508,7 @@ func main() {
 			continue
 		}
 
-		args := []string{}
-		for idx, arg := range strings.Split(line, " ") {
-			if arg == "" && idx != 0 {
-				continue
-			}
-			args = append(args, arg)
-		}
-
-		if args[0] == "" {
-			fmt.Println("invalid command: (empty string)")
-		}
-
-		err = topCmds.run(args)
+		err = topCmds.run(line)
 		if err != nil {
 			panic(err)
 		}

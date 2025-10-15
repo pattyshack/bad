@@ -88,7 +88,7 @@ func (registers *Registers) GetProgramCounter() (State, VirtualAddress, error) {
 		return State{}, 0, fmt.Errorf("failed to read program counter: %w", err)
 	}
 
-	return state, VirtualAddress(state.Value(ProgramCounter).ToUint64()), nil
+	return state, state.ProgramCounter(), nil
 }
 
 func (registers *Registers) SetProgramCounter(address VirtualAddress) error {

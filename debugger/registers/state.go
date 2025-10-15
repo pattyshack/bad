@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"reflect"
 
+	. "github.com/pattyshack/bad/debugger/common"
 	"github.com/pattyshack/bad/ptrace"
 )
 
@@ -84,6 +85,10 @@ func (state State) Value(reg Spec) Value {
 	default:
 		panic(fmt.Sprintf("invalid register: %#v", reg))
 	}
+}
+
+func (state State) ProgramCounter() VirtualAddress {
+	return VirtualAddress(state.Value(ProgramCounter).ToUint64())
 }
 
 func (state State) WithValue(

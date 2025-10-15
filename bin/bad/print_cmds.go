@@ -2,7 +2,6 @@ package main
 
 import (
 	"fmt"
-	"path"
 	"strconv"
 	"strings"
 
@@ -10,67 +9,14 @@ import (
 	. "github.com/pattyshack/bad/debugger/common"
 )
 
-func backtrace(db *debugger.Debugger, args []string) error {
-	printRegsAtFrame := -1 // -2 for all frames
-	if len(args) > 0 {
-		if args[0] == "all" {
-			printRegsAtFrame = -2
-		} else {
-			idx, err := strconv.ParseUint(args[0], 10, 32)
-			if err != nil {
-				fmt.Println("invalid frame argument:", args[0])
-				return nil
-			}
-			printRegsAtFrame = int(idx)
-		}
-	}
+func disassemble(db *debugger.Debugger, argsStr string) error {
 
-	matchingReg := ""
-	if len(args) > 1 {
-		matchingReg = args[1]
-	}
-
-	fmt.Println("Backtrace:")
-	for idx, frame := range db.CurrentThread().CallStack.ExecutingStack() {
-		inlinedStr := ""
-		if frame.IsInlined() {
-			inlinedStr = fmt.Sprintf("(inlined in %s) ", frame.BaseFrame.Name)
-		}
-
-		libStr := ""
-		elfFileName := ""
-    if frame.SourceFile != nil {
-  		elfFileName = frame.SourceFile.CompileUnit.File.FileName
-    }
-		if elfFileName != "" {
-			libStr = fmt.Sprintf(" [%s]", path.Base(elfFileName))
-		}
-
-		fmt.Printf(
-			"%4d. %s %s%s\n",
-			idx,
-			frame.BacktraceProgramCounter,
-			inlinedStr,
-			frame.Name)
-		fmt.Printf("        %s:%d%s\n", frame.SourceFile, frame.SourceLine, libStr)
-
-		if printRegsAtFrame == idx ||
-			(!frame.IsInlined() && printRegsAtFrame == -2) {
-			fmt.Println("      Registers:", matchingReg)
-			printRegisters("        ", frame.Registers, matchingReg)
-		}
-	}
-
-	return nil
-}
-
-func disassemble(db *debugger.Debugger, args []string) error {
 	addrStr := ""
-	addr := db.CurrentThread().Status().NextInstructionAddress
+	addr := db.CurrentStatus().NextInstructionAddress
 
 	numInstStr := ""
 	numInst := 5
-	for _, arg := range args {
+	for _, arg := range splitAllArgs(argsStr) {
 		if strings.HasPrefix(arg, "@") {
 			if addrStr == "" {
 				addrStr = arg
@@ -159,12 +105,12 @@ func printThreadStatus(db *debugger.Debugger, status *debugger.ThreadStatus) {
 	}
 }
 
-func printStatus(db *debugger.Debugger, args []string) error {
-	printThreadStatus(db, db.CurrentThread().Status())
+func printStatus(db *debugger.Debugger, args string) error {
+	printThreadStatus(db, db.CurrentStatus())
 	return nil
 }
 
-func printElves(db *debugger.Debugger, args []string) error {
+func printElves(db *debugger.Debugger, args string) error {
 	fmt.Println("Loaded elves:")
 	for _, file := range db.LoadedElves.Files() {
 		if file.FileName == "" {

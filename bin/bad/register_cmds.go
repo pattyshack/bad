@@ -1,10 +1,12 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"strings"
 
 	"github.com/pattyshack/bad/debugger"
+	. "github.com/pattyshack/bad/debugger/common"
 	"github.com/pattyshack/bad/debugger/registers"
 )
 
@@ -58,23 +60,22 @@ func printRegisters(
 	}
 }
 
-func readRegister(db *debugger.Debugger, args []string) error {
-	state, err := db.CurrentThread().Registers.GetState()
+func readRegister(db *debugger.Debugger, args string) error {
+	state, err := db.GetInspectFrameRegisterState()
 	if err != nil {
 		return err
 	}
 
-	match := ""
-	if len(args) > 0 {
-		match = args[0]
-	}
+	args = strings.TrimSpace(args)
 
-	fmt.Println("Registers:", match)
-	printRegisters("  ", state, match)
+	fmt.Println("Registers:", args)
+	printRegisters("  ", state, args)
 	return nil
 }
 
-func writeRegister(db *debugger.Debugger, args []string) error {
+func writeRegister(db *debugger.Debugger, argsStr string) error {
+	args := splitAllArgs(argsStr)
+
 	if len(args) != 2 {
 		fmt.Println("Expected two arguments: <register> <value>")
 		return nil
@@ -92,7 +93,7 @@ func writeRegister(db *debugger.Debugger, args []string) error {
 		return nil
 	}
 
-	state, err := db.CurrentThread().Registers.GetState()
+	state, err := db.GetInspectFrameRegisterState()
 	if err != nil {
 		return err
 	}
@@ -103,5 +104,14 @@ func writeRegister(db *debugger.Debugger, args []string) error {
 		return nil
 	}
 
-	return db.CurrentThread().Registers.SetState(state)
+	err = db.SetInspectFrameRegisterState(state)
+	if err != nil {
+		if errors.Is(err, ErrInvalidInput) {
+			fmt.Println(err)
+			return nil
+		}
+		return err
+	}
+
+	return nil
 }

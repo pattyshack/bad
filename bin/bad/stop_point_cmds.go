@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"strconv"
+	"strings"
 
 	"github.com/pattyshack/bad/debugger"
 	. "github.com/pattyshack/bad/debugger/common"
@@ -26,21 +27,21 @@ func (cmd stopPointCommands) setBreakpointSubCommands() subCommands {
 		{
 			name:        "function",
 			description: " [-h] <name>      - set function break point",
-			command: runCmd(func(args []string) error {
+			command: runCmd(func(args string) error {
 				return cmd.setBreakPoint(functionBreakPoint, args)
 			}),
 		},
 		{
 			name:        "line",
 			description: " [-h] <path> <line>   - set line break point",
-			command: runCmd(func(args []string) error {
+			command: runCmd(func(args string) error {
 				return cmd.setBreakPoint(lineBreakPoint, args)
 			}),
 		},
 		{
 			name:        "addresses",
 			description: " [-h] <address>+ - set addresses break point",
-			command: runCmd(func(args []string) error {
+			command: runCmd(func(args string) error {
 				return cmd.setBreakPoint(addressesBreakPoint, args)
 			}),
 		},
@@ -98,7 +99,7 @@ func (cmd stopPointCommands) name() string {
 	}
 }
 
-func (cmd stopPointCommands) list(args []string) error {
+func (cmd stopPointCommands) list(args string) error {
 	stopPoints := cmd.stopPoints.List()
 	if len(stopPoints) == 0 {
 		fmt.Println("No", cmd.name(), "set")
@@ -127,12 +128,14 @@ func (cmd stopPointCommands) list(args []string) error {
 }
 
 func (cmd stopPointCommands) parseAddressesBreakPoint(
-	args []string,
+	argsStr string,
 ) (
 	stoppoint.StopSiteResolver,
 	stoppoint.StopSiteType,
 	error,
 ) {
+	args := splitAllArgs(argsStr)
+
 	siteType := stoppoint.NewBreakSiteType(false)
 	if len(args) > 0 && args[0] == "-h" {
 		siteType.IsHardware = true
@@ -160,12 +163,14 @@ func (cmd stopPointCommands) parseAddressesBreakPoint(
 }
 
 func (cmd stopPointCommands) parseLineBreakPoint(
-	args []string,
+	argsStr string,
 ) (
 	stoppoint.StopSiteResolver,
 	stoppoint.StopSiteType,
 	error,
 ) {
+	args := splitAllArgs(argsStr)
+
 	siteType := stoppoint.NewBreakSiteType(false)
 	if len(args) > 0 && args[0] == "-h" {
 		siteType.IsHardware = true
@@ -188,12 +193,14 @@ func (cmd stopPointCommands) parseLineBreakPoint(
 }
 
 func (cmd stopPointCommands) parseFunctionBreakPoint(
-	args []string,
+	argsStr string,
 ) (
 	stoppoint.StopSiteResolver,
 	stoppoint.StopSiteType,
 	error,
 ) {
+	args := splitAllArgs(argsStr)
+
 	siteType := stoppoint.NewBreakSiteType(false)
 	if len(args) > 0 && args[0] == "-h" {
 		siteType.IsHardware = true
@@ -208,7 +215,7 @@ func (cmd stopPointCommands) parseFunctionBreakPoint(
 	return cmd.debugger.NewFunctionResolver(args[0]), siteType, nil
 }
 
-func (cmd stopPointCommands) setBreakPoint(kind int, args []string) error {
+func (cmd stopPointCommands) setBreakPoint(kind int, args string) error {
 	var resolver stoppoint.StopSiteResolver
 	var siteType stoppoint.StopSiteType
 	var err error
@@ -241,12 +248,14 @@ func (cmd stopPointCommands) setBreakPoint(kind int, args []string) error {
 }
 
 func (cmd stopPointCommands) parseWatchPoint(
-	args []string,
+	argsStr string,
 ) (
 	stoppoint.StopSiteResolver,
 	stoppoint.StopSiteType,
 	error,
 ) {
+	args := splitAllArgs(argsStr)
+
 	if len(args) != 3 {
 		return nil, stoppoint.StopSiteType{}, fmt.Errorf(
 			"failed to set watch point. expected 3 arguments: <addr> <mode> <size>")
@@ -284,7 +293,7 @@ func (cmd stopPointCommands) parseWatchPoint(
 	return resolver, siteType, nil
 }
 
-func (cmd stopPointCommands) setWatchPoint(args []string) error {
+func (cmd stopPointCommands) setWatchPoint(args string) error {
 	resolver, siteType, err := cmd.parseWatchPoint(args)
 	if err != nil {
 		fmt.Println(err)
@@ -303,13 +312,14 @@ func (cmd stopPointCommands) setWatchPoint(args []string) error {
 	return nil
 }
 
-func (cmd stopPointCommands) remove(args []string) error {
-	if len(args) < 1 {
+func (cmd stopPointCommands) remove(args string) error {
+	args = strings.TrimSpace(args)
+	if args == "" {
 		fmt.Printf("failed to remove %s. id not specified\n", cmd.name())
 		return nil
 	}
 
-	id, err := strconv.ParseInt(args[0], 10, 32)
+	id, err := strconv.ParseInt(args, 10, 32)
 	if err != nil {
 		fmt.Printf("failed to parse %s id: %s\n", cmd.name(), err)
 		return nil
@@ -327,13 +337,16 @@ func (cmd stopPointCommands) remove(args []string) error {
 	return nil
 }
 
-func (cmd stopPointCommands) enable(args []string) error {
-	if len(args) == 0 {
+func (cmd stopPointCommands) enable(args string) error {
+	idStr, indexStr := splitArg(args)
+	indexStr = strings.TrimSpace(indexStr)
+
+	if idStr == "" {
 		fmt.Printf("failed to enable %s. id not specified\n", cmd.name())
 		return nil
 	}
 
-	id, err := strconv.ParseInt(args[0], 10, 32)
+	id, err := strconv.ParseInt(idStr, 10, 32)
 	if err != nil {
 		fmt.Printf("failed to parse %s id: %s\n", cmd.name(), err)
 		return nil
@@ -345,11 +358,11 @@ func (cmd stopPointCommands) enable(args []string) error {
 		return nil
 	}
 
-	if len(args) == 1 {
+	if indexStr == "" {
 		return sp.Enable()
 	}
 
-	idx, err := strconv.ParseInt(args[1], 10, 32)
+	idx, err := strconv.ParseInt(indexStr, 10, 32)
 	if err != nil {
 		fmt.Printf("failed to parse %s %d site index: %s\n", cmd.name(), id, err)
 		return nil
@@ -365,13 +378,16 @@ func (cmd stopPointCommands) enable(args []string) error {
 	return sites[siteIdx].Enable()
 }
 
-func (cmd stopPointCommands) disable(args []string) error {
-	if len(args) == 0 {
+func (cmd stopPointCommands) disable(args string) error {
+	idStr, indexStr := splitArg(args)
+	indexStr = strings.TrimSpace(indexStr)
+
+	if idStr == "" {
 		fmt.Printf("failed to disable %s. id not specified\n", cmd.name())
 		return nil
 	}
 
-	id, err := strconv.ParseInt(args[0], 10, 32)
+	id, err := strconv.ParseInt(idStr, 10, 32)
 	if err != nil {
 		fmt.Printf("failed to parse %s id: %s\n", cmd.name(), err)
 		return nil
@@ -383,11 +399,11 @@ func (cmd stopPointCommands) disable(args []string) error {
 		return nil
 	}
 
-	if len(args) == 1 {
+	if indexStr == "" {
 		return sp.Disable()
 	}
 
-	idx, err := strconv.ParseInt(args[1], 10, 32)
+	idx, err := strconv.ParseInt(indexStr, 10, 32)
 	if err != nil {
 		fmt.Printf("failed to parse %s %d site index: %s\n", cmd.name(), id, err)
 		return nil

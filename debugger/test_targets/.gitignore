@@ -5,6 +5,7 @@ Makefile
 
 anti_debugger
 blocks
+expr
 global_variable
 hello_world
 member_pointer

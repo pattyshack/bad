@@ -16,6 +16,7 @@ import (
 
 	"github.com/pattyshack/bad/debugger/catchpoint"
 	. "github.com/pattyshack/bad/debugger/common"
+	"github.com/pattyshack/bad/debugger/expression"
 	"github.com/pattyshack/bad/debugger/registers"
 	"github.com/pattyshack/bad/debugger/stoppoint"
 	"github.com/pattyshack/bad/dwarf"
@@ -87,7 +88,7 @@ func (DebuggerSuite) TestResumeFromAttach(t *testing.T) {
 	expect.Nil(t, err)
 	expect.Equal(t, procfs.TracingStop, status.State)
 
-	err = db.CurrentThread().threadTracer.Resume(0)
+	err = db.currentThread().threadTracer.Resume(0)
 	expect.Nil(t, err)
 
 	status, err = procfs.GetProcessStatus(cmd.Process.Pid)
@@ -106,7 +107,7 @@ func (DebuggerSuite) TestResumeFromStart(t *testing.T) {
 	expect.Nil(t, err)
 	expect.Equal(t, procfs.TracingStop, status.State)
 
-	err = db.CurrentThread().threadTracer.Resume(0)
+	err = db.currentThread().threadTracer.Resume(0)
 	expect.Nil(t, err)
 
 	status, err = procfs.GetProcessStatus(db.Pid)
@@ -155,13 +156,13 @@ func (DebuggerSuite) TestSetRegisterState(t *testing.T) {
 	rsi, ok := registers.ByName("rsi")
 	expect.True(t, ok)
 
-	regState, err := db.CurrentThread().Registers.GetState()
+	regState, err := db.GetInspectFrameRegisterState()
 	expect.Nil(t, err)
 
 	regState, err = regState.WithValue(rsi, registers.U64(0xcafecafe))
 	expect.Nil(t, err)
 
-	err = db.CurrentThread().Registers.SetState(regState)
+	err = db.SetInspectFrameRegisterState(regState)
 	expect.Nil(t, err)
 
 	status, err = db.ResumeCurrentUntilSignal()
@@ -178,13 +179,13 @@ func (DebuggerSuite) TestSetRegisterState(t *testing.T) {
 	mm0, ok := registers.ByName("mm0")
 	expect.True(t, ok)
 
-	regState, err = db.CurrentThread().Registers.GetState()
+	regState, err = db.GetInspectFrameRegisterState()
 	expect.Nil(t, err)
 
 	regState, err = regState.WithValue(mm0, registers.U128(0, 0xba5eba11))
 	expect.Nil(t, err)
 
-	err = db.CurrentThread().Registers.SetState(regState)
+	err = db.SetInspectFrameRegisterState(regState)
 	expect.Nil(t, err)
 
 	status, err = db.ResumeAllUntilSignal()
@@ -200,13 +201,13 @@ func (DebuggerSuite) TestSetRegisterState(t *testing.T) {
 	xmm0, ok := registers.ByName("xmm0")
 	expect.True(t, ok)
 
-	regState, err = db.CurrentThread().Registers.GetState()
+	regState, err = db.GetInspectFrameRegisterState()
 	expect.Nil(t, err)
 
 	regState, err = regState.WithValue(xmm0, registers.F64(42.24))
 	expect.Nil(t, err)
 
-	err = db.CurrentThread().Registers.SetState(regState)
+	err = db.SetInspectFrameRegisterState(regState)
 	expect.Nil(t, err)
 
 	status, err = db.ResumeCurrentUntilSignal()
@@ -219,7 +220,7 @@ func (DebuggerSuite) TestSetRegisterState(t *testing.T) {
 
 	// check st0
 
-	regState, err = db.CurrentThread().Registers.GetState()
+	regState, err = db.GetInspectFrameRegisterState()
 	expect.Nil(t, err)
 
 	// NOTE: long double is not expressible in golang.
@@ -257,7 +258,7 @@ func (DebuggerSuite) TestSetRegisterState(t *testing.T) {
 	regState, err = regState.WithValue(ftw, ftwBits)
 	expect.Nil(t, err)
 
-	err = db.CurrentThread().Registers.SetState(regState)
+	err = db.SetInspectFrameRegisterState(regState)
 	expect.Nil(t, err)
 
 	status, err = db.ResumeAllUntilSignal()
@@ -279,7 +280,7 @@ func (DebuggerSuite) TestGetRegisterState(t *testing.T) {
 	expect.Nil(t, err)
 	expect.True(t, status.Stopped)
 
-	regState, err := db.CurrentThread().Registers.GetState()
+	regState, err := db.GetInspectFrameRegisterState()
 	expect.Nil(t, err)
 	r13, ok := registers.ByName("r13")
 	expect.True(t, ok)
@@ -293,7 +294,7 @@ func (DebuggerSuite) TestGetRegisterState(t *testing.T) {
 	expect.Nil(t, err)
 	expect.True(t, status.Stopped)
 
-	regState, err = db.CurrentThread().Registers.GetState()
+	regState, err = db.GetInspectFrameRegisterState()
 	expect.Nil(t, err)
 
 	r13b, ok := registers.ByName("r13b")
@@ -308,7 +309,7 @@ func (DebuggerSuite) TestGetRegisterState(t *testing.T) {
 	expect.Nil(t, err)
 	expect.True(t, status.Stopped)
 
-	regState, err = db.CurrentThread().Registers.GetState()
+	regState, err = db.GetInspectFrameRegisterState()
 	expect.Nil(t, err)
 
 	mm0, ok := registers.ByName("mm0")
@@ -326,7 +327,7 @@ func (DebuggerSuite) TestGetRegisterState(t *testing.T) {
 	expect.Nil(t, err)
 	expect.True(t, status.Stopped)
 
-	regState, err = db.CurrentThread().Registers.GetState()
+	regState, err = db.GetInspectFrameRegisterState()
 	expect.Nil(t, err)
 
 	xmm0, ok := registers.ByName("xmm0")
@@ -344,7 +345,7 @@ func (DebuggerSuite) TestGetRegisterState(t *testing.T) {
 	expect.Nil(t, err)
 	expect.True(t, status.Stopped)
 
-	regState, err = db.CurrentThread().Registers.GetState()
+	regState, err = db.GetInspectFrameRegisterState()
 	expect.Nil(t, err)
 
 	st0, ok := registers.ByName("st0")
@@ -393,9 +394,8 @@ func (DebuggerSuite) TestSoftwareBreakPointSite(t *testing.T) {
 	expect.True(t, state.Stopped)
 	expect.Equal(t, syscall.SIGTRAP, state.StopSignal)
 
-	_, pc, err := db.CurrentThread().Registers.GetProgramCounter()
 	expect.Nil(t, err)
-	expect.Equal(t, loadAddress, pc)
+	expect.Equal(t, loadAddress, db.CurrentStatus().NextInstructionAddress)
 
 	state, err = db.ResumeCurrentUntilSignal()
 	expect.Nil(t, err)
@@ -719,7 +719,7 @@ func (DebuggerSuite) TestSourceLevelStepping(t *testing.T) {
 	expect.Equal(
 		t,
 		2,
-		db.CurrentThread().CallStack.NumUnexecutedInlinedFunctions())
+		db.currentThread().CallStack.NumUnexecutedInlinedFunctions())
 
 	oldPC = status.NextInstructionAddress
 
@@ -732,7 +732,7 @@ func (DebuggerSuite) TestSourceLevelStepping(t *testing.T) {
 	expect.Equal(
 		t,
 		1,
-		db.CurrentThread().CallStack.NumUnexecutedInlinedFunctions())
+		db.currentThread().CallStack.NumUnexecutedInlinedFunctions())
 	expect.Equal(t, oldPC, status.NextInstructionAddress)
 
 	status, err = db.StepOut()
@@ -781,7 +781,7 @@ func (DebuggerSuite) TestStackUnwinding(t *testing.T) {
 	expect.Equal(t, syscall.SIGTRAP, status.StopSignal)
 	expect.Equal(t, SingleStepTrap, status.TrapKind)
 
-	frames := db.CurrentThread().CallStack.ExecutingStack()
+	frames := db.currentThread().CallStack.ExecutingStack()
 	expect.Equal(t, 4, len(frames))
 
 	names := []string{}
@@ -819,7 +819,7 @@ func (DebuggerSuite) TestSharedLibraryTracing(t *testing.T) {
 	expect.True(t, status.Stopped)
 	expect.Equal(t, SoftwareTrap, status.TrapKind)
 
-	frames := db.CurrentThread().CallStack.ExecutingStack()
+	frames := db.currentThread().CallStack.ExecutingStack()
 	expect.Equal(t, 2, len(frames))
 
 	names := []string{}
@@ -864,7 +864,7 @@ func (DebuggerSuite) TestMultiThreading(t *testing.T) {
 
 	trapped := map[int]struct{}{}
 
-	for db.MainThread().Status().Stopped {
+	for db.mainThread().Status().Stopped {
 		_, err := db.ResumeAllUntilSignal()
 		expect.Nil(t, err)
 
@@ -882,7 +882,7 @@ func (DebuggerSuite) TestMultiThreading(t *testing.T) {
 	expect.Equal(t, 10, len(created))
 	expect.Equal(t, 10, len(trapped))
 	expect.Equal(t, 10, len(exited))
-	expect.True(t, db.MainThread().Status().Exited)
+	expect.True(t, db.mainThread().Status().Exited)
 }
 
 func (DebuggerSuite) TestDwarfExpression(t *testing.T) {
@@ -912,7 +912,7 @@ func (DebuggerSuite) TestDwarfExpression(t *testing.T) {
 	expect.Equal(t, SoftwareTrap, status.TrapKind)
 
 	location, err := dwarf.EvaluateExpression(
-		db.CurrentThread().CallStack.CurrentFrame(),
+		db.currentThread().CallStack.ExecutingFrame(),
 		false, // in frame info
 		instructions,
 		false) // push cfa
@@ -957,7 +957,7 @@ func (DebuggerSuite) TestReadGlobalVariable(t *testing.T) {
 	checkVar := func(expected uint64) {
 		globalVar, err := db.ResolveVariableExpression("g_int")
 		expect.Nil(t, err)
-		expect.Equal(t, UintKind, globalVar.Kind)
+		expect.Equal(t, expression.UintKind, globalVar.Kind)
 		expect.Equal(t, 8, globalVar.ByteSize)
 
 		val, err := globalVar.DecodeSimpleValue()
@@ -981,7 +981,7 @@ func (DebuggerSuite) TestReadGlobalVariable(t *testing.T) {
 
 	checkVar(42)
 
-	data, err := db.ResolveVariableExpression("ptr->pets[0].name")
+	data, err := db.ResolveVariableExpression("someone->pets[0].name")
 	expect.Nil(t, err)
 	expect.True(t, data.IsCharPointer())
 
@@ -991,12 +991,15 @@ func (DebuggerSuite) TestReadGlobalVariable(t *testing.T) {
 
 	data, err = db.ResolveVariableExpression("sy.pets[2].name[3]")
 	expect.Nil(t, err)
-	expect.Equal(t, CharKind, data.Kind)
-	expect.Equal(t, []byte("k"), data.Data)
+	expect.Equal(t, expression.CharKind, data.Kind)
+
+	char, err := data.DecodeSimpleValue()
+	expect.Nil(t, err)
+	expect.Equal(t, 'k', char.(byte))
 
 	data, err = db.ResolveVariableExpression("cats[1].age")
 	expect.Nil(t, err)
-	expect.Equal(t, IntKind, data.Kind)
+	expect.Equal(t, expression.IntKind, data.Kind)
 	expect.Equal(t, 4, data.ByteSize)
 
 	age, err := data.DecodeSimpleValue()
@@ -1005,7 +1008,7 @@ func (DebuggerSuite) TestReadGlobalVariable(t *testing.T) {
 
 	data, err = db.ResolveVariableExpression("cats[1].color")
 	expect.Nil(t, err)
-	expect.Equal(t, IntKind, data.Kind)
+	expect.Equal(t, expression.IntKind, data.Kind)
 	expect.Equal(t, 4, data.ByteSize)
 
 	color, err := data.DecodeSimpleValue()
@@ -1034,7 +1037,7 @@ func (DebuggerSuite) TestReadLocalVariable(t *testing.T) {
 	expects := func(expected int32) {
 		data, err := db.ResolveVariableExpression("i")
 		expect.Nil(t, err)
-		expect.Equal(t, IntKind, data.Kind)
+		expect.Equal(t, expression.IntKind, data.Kind)
 		expect.Equal(t, 4, data.ByteSize)
 
 		i, err := data.DecodeSimpleValue()
@@ -1081,7 +1084,7 @@ func (DebuggerSuite) TestReadMemberPointer(t *testing.T) {
 
 	data, err := db.ResolveVariableExpression("data_ptr")
 	expect.Nil(t, err)
-	expect.Equal(t, MemberPointerKind, data.Kind)
+	expect.Equal(t, expression.MemberPointerKind, data.Kind)
 	expect.Equal(t, 8, data.ByteSize)
 
 	dataAddr, err := data.DecodeSimpleValue()
@@ -1090,7 +1093,7 @@ func (DebuggerSuite) TestReadMemberPointer(t *testing.T) {
 
 	data, err = db.ResolveVariableExpression("func_ptr")
 	expect.Nil(t, err)
-	expect.Equal(t, MemberPointerKind, data.Kind)
+	expect.Equal(t, expression.MemberPointerKind, data.Kind)
 	expect.Equal(t, 16, data.ByteSize)
 
 	funcAddr, err := data.DecodeSimpleValue()

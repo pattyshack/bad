@@ -1,18 +1,16 @@
 package debugger
 
 import (
-	"encoding/binary"
 	"errors"
 	"fmt"
 	"os"
 	"os/exec"
 	"sort"
-	"strconv"
-	"strings"
 	"syscall"
 
 	"github.com/pattyshack/bad/debugger/catchpoint"
 	. "github.com/pattyshack/bad/debugger/common"
+	"github.com/pattyshack/bad/debugger/expression"
 	"github.com/pattyshack/bad/debugger/loadedelves"
 	"github.com/pattyshack/bad/debugger/memory"
 	"github.com/pattyshack/bad/debugger/registers"
@@ -35,7 +33,7 @@ type Debugger struct {
 	VirtualMemory *memory.VirtualMemory
 	*memory.Disassembler
 
-	descriptorPool *DataDescriptorPool
+	descriptorPool *expression.DataDescriptorPool
 
 	stopSites stoppoint.StopSitePool
 
@@ -46,40 +44,16 @@ type Debugger struct {
 
 	SyscallCatchPolicy *catchpoint.SyscallCatchPolicy
 
-	entryPointSite       stoppoint.StopSite
-	rendezvousNotifySite stoppoint.StopSite
-	rendezvousAddresses  map[VirtualAddress]struct{}
+	EvaluatedResults *expression.EvaluatedResultPool
+
+	entryPointRendezvousSite stoppoint.StopSite
+	rendezvousNotifySite     stoppoint.StopSite
+	rendezvousAddresses      map[VirtualAddress]struct{}
 
 	currentTid int
 	threads    map[int]*ThreadState
 
 	threadLifeCycleWatchers []func(*ThreadStatus)
-}
-
-func AttachTo(pid int) (*Debugger, error) {
-	tracer, err := ptrace.AttachToProcess(pid)
-	if err != nil {
-		return nil, err
-	}
-
-	return newDebugger(tracer, false)
-}
-
-func StartAndAttachTo(cmd *exec.Cmd) (*Debugger, error) {
-	tracer, err := ptrace.StartAndAttachToProcess(cmd)
-	if err != nil {
-		return nil, err
-	}
-
-	return newDebugger(tracer, true)
-}
-
-func StartCmdAndAttachTo(name string, args ...string) (*Debugger, error) {
-	cmd := exec.Command(name, args...)
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-
-	return StartAndAttachTo(cmd)
 }
 
 func newDebugger(
@@ -100,9 +74,10 @@ func newDebugger(
 		LoadedElves:             loadedElves,
 		SourceFiles:             NewSourceFiles(),
 		VirtualMemory:           mem,
-		descriptorPool:          NewDataDescriptorPool(),
+		descriptorPool:          expression.NewDataDescriptorPool(loadedElves, mem),
 		StopSiteResolverFactory: stoppoint.NewStopSiteResolverFactory(loadedElves),
 		SyscallCatchPolicy:      catchpoint.NewSyscallCatchPolicy(),
+		EvaluatedResults:        &expression.EvaluatedResultPool{},
 		rendezvousAddresses:     map[VirtualAddress]struct{}{},
 		currentTid:              processTracer.Pid,
 		threads:                 map[int]*ThreadState{},
@@ -223,10 +198,36 @@ func newDebugger(
 		return nil, err
 	}
 
-	db.entryPointSite = entryPointSite
+	db.entryPointRendezvousSite = entryPointSite
 	db.rendezvousAddresses[db.LoadedElves.EntryPoint()] = struct{}{}
 
 	return db, nil
+}
+
+func AttachTo(pid int) (*Debugger, error) {
+	tracer, err := ptrace.AttachToProcess(pid)
+	if err != nil {
+		return nil, err
+	}
+
+	return newDebugger(tracer, false)
+}
+
+func StartAndAttachTo(cmd *exec.Cmd) (*Debugger, error) {
+	tracer, err := ptrace.StartAndAttachToProcess(cmd)
+	if err != nil {
+		return nil, err
+	}
+
+	return newDebugger(tracer, true)
+}
+
+func StartCmdAndAttachTo(name string, args ...string) (*Debugger, error) {
+	cmd := exec.Command(name, args...)
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+
+	return StartAndAttachTo(cmd)
 }
 
 func (db *Debugger) Close() error {
@@ -235,7 +236,7 @@ func (db *Debugger) Close() error {
 		_ = db.processTracer.Close()
 	}()
 
-	if db.MainThread().status.Running() {
+	if db.mainThread().status.Running() {
 		err := db.signal.StopToProcess()
 		if err != nil {
 			return err
@@ -247,7 +248,7 @@ func (db *Debugger) Close() error {
 		}
 	}
 
-	if db.MainThread().status.Exited {
+	if db.mainThread().status.Exited {
 		return nil
 	}
 
@@ -271,6 +272,12 @@ func (db *Debugger) Close() error {
 	return nil
 }
 
+func (db *Debugger) WatchThreadLifeCycle(notify func(*ThreadStatus)) {
+	db.threadLifeCycleWatchers = append(
+		db.threadLifeCycleWatchers,
+		notify)
+}
+
 func (db *Debugger) ListThreads() (*ThreadState, []*ThreadState) {
 	threads := []*ThreadState{}
 	for _, thread := range db.threads {
@@ -283,7 +290,7 @@ func (db *Debugger) ListThreads() (*ThreadState, []*ThreadState) {
 			return threads[i].Tid < threads[j].Tid
 		})
 
-	return db.CurrentThread(), threads
+	return db.currentThread(), threads
 }
 
 func (db *Debugger) SetCurrentThread(tid int) error {
@@ -296,20 +303,94 @@ func (db *Debugger) SetCurrentThread(tid int) error {
 	return nil
 }
 
-func (db *Debugger) CurrentThread() *ThreadState {
+func (db *Debugger) currentThread() *ThreadState {
 	return db.threads[db.currentTid]
 }
 
-func (db *Debugger) MainThread() *ThreadState {
+func (db *Debugger) mainThread() *ThreadState {
 	return db.threads[db.Pid]
 }
 
-func (db *Debugger) WatchThreadLifeCycle(notify func(*ThreadStatus)) {
-	db.threadLifeCycleWatchers = append(db.threadLifeCycleWatchers, notify)
+func (db *Debugger) CurrentStatus() *ThreadStatus {
+	return db.currentThread().Status()
+}
+
+func (db *Debugger) Exited() bool {
+	return db.mainThread().status.Exited
+}
+
+func (db *Debugger) BacktraceStack() (*CallFrame, []*CallFrame) {
+	stack := db.currentThread().CallStack
+	return stack.CurrentInspectFrame(), stack.ExecutingStack()
+}
+
+func (db *Debugger) InspectCalleeFrame() {
+	db.currentThread().CallStack.InspectCalleeFrame()
+}
+
+func (db *Debugger) InspectCallerFrame() {
+	db.currentThread().CallStack.InspectCallerFrame()
+}
+
+func (db *Debugger) GetInspectFrameRegisterState() (registers.State, error) {
+	return db.currentThread().CallStack.GetInspectFrameRegisterState()
+}
+
+func (db *Debugger) SetInspectFrameRegisterState(state registers.State) error {
+	return db.currentThread().CallStack.SetInspectFrameRegisterState(
+		state)
+}
+
+func (db *Debugger) ListInspectFrameLocalVariables() (
+	[]*expression.TypedData,
+	error,
+) {
+	return db.currentThread().CallStack.ListInspectFrameLocalVariables()
+}
+
+func (db *Debugger) ReadInspectFrameVariableOrFunction(
+	name string,
+) (
+	*expression.TypedData,
+	error,
+) {
+	return db.currentThread().CallStack.ReadInspectFrameVariableOrFunction(name)
+}
+
+func (db *Debugger) InvokeMallocInCurrentThread(
+	size int,
+) (
+	VirtualAddress,
+	error,
+) {
+	return db.currentThread().InvokeMalloc(size)
+}
+
+func (db *Debugger) InvokeInCurrentThread(
+	functionOrMethod *expression.TypedData,
+	arguments []*expression.TypedData,
+) (
+	*expression.TypedData,
+	error,
+) {
+	return db.currentThread().Invoke(functionOrMethod, arguments)
 }
 
 func (db *Debugger) Memory() *memory.VirtualMemory {
 	return db.VirtualMemory
+}
+
+func (db *Debugger) DescriptorPool() *expression.DataDescriptorPool {
+	return db.descriptorPool
+}
+
+func (db *Debugger) GetEvaluatedResult(
+	idx int,
+) (
+	*expression.EvaluatedResult,
+	error,
+) {
+	return db.EvaluatedResults.Get(idx)
 }
 
 func (db *Debugger) AllRegisters() []*registers.Registers {
@@ -322,236 +403,6 @@ func (db *Debugger) AllRegisters() []*registers.Registers {
 		all = append(all, thread.Registers)
 	}
 	return all
-}
-
-func (db *Debugger) ResumeCurrentUntilSignal() (*ThreadStatus, error) {
-	thread := db.CurrentThread()
-	if db.MainThread().status.Exited {
-		return nil, fmt.Errorf(
-			"failed to resume thread %d: %w",
-			thread.Tid,
-			ErrProcessExited)
-	}
-
-	err := thread.maybeBypassCurrentPCBreakSite()
-	if err != nil {
-		return nil, err
-	}
-
-	// Note that the current thread may have been updated by resumeUntilSignal.
-	status, err := db.resumeUntilSignal(thread)
-	if err != nil {
-		return nil, err
-	}
-
-	return status, nil
-}
-
-func (db *Debugger) ResumeAllUntilSignal() (*ThreadStatus, error) {
-	if db.MainThread().status.Exited {
-		return nil, fmt.Errorf("failed to resume all threads: %w", ErrProcessExited)
-	}
-
-	// Ensure all threads have advance by at least one instruction
-	for _, thread := range db.threads {
-		err := thread.maybeBypassCurrentPCBreakSite()
-		if err != nil {
-			return nil, err
-		}
-	}
-
-	// Note that the current thread may have been updated by resumeUntilSignal.
-	status, err := db.resumeUntilSignal(nil)
-	if err != nil {
-		return nil, err
-	}
-
-	return status, nil
-}
-
-func (db *Debugger) StepInstruction() (*ThreadStatus, error) {
-	thread := db.CurrentThread()
-	if db.MainThread().status.Exited {
-		return nil, fmt.Errorf(
-			"failed to step instruction for thread %d: %w",
-			thread.Tid,
-			ErrProcessExited)
-	}
-
-	err := thread.maybeSwallowInternalSigStop()
-	if err != nil {
-		return nil, err
-	}
-
-	err = thread.stepInstruction(true, false)
-	if err != nil {
-		return nil, err
-	}
-
-	reportStatus := db.focusOnImportantStatus(thread, nil)
-	if reportStatus != nil {
-		return reportStatus, nil
-	}
-
-	return thread.status, nil
-}
-
-func (db *Debugger) StepIn() (*ThreadStatus, error) {
-	thread := db.CurrentThread()
-	if db.MainThread().status.Exited {
-		return nil, fmt.Errorf(
-			"failed to step in for thread %d: %w",
-			thread.Tid,
-			ErrProcessExited)
-	}
-
-	inlinedStepInStatus, err := thread.CallStack.MaybeStepIntoInlinedFunction(
-		thread.status)
-	if err != nil {
-		return nil, fmt.Errorf(
-			"failed to step in for thread %d: %w",
-			thread.Tid,
-			err)
-	}
-
-	if inlinedStepInStatus != nil {
-		thread.status = inlinedStepInStatus
-		thread.expectsSyscallExit = false
-		return thread.status, nil
-	}
-
-	err = thread.maybeSwallowInternalSigStop()
-	if err != nil {
-		return nil, err
-	}
-
-	err = thread.stepUntilDifferentLine(false)
-	if err != nil {
-		return nil, err
-	}
-
-	err = thread.maybeStepOverFunctionPrologue()
-	if err != nil {
-		return nil, err
-	}
-
-	reportStatus := db.focusOnImportantStatus(thread, nil)
-	if reportStatus != nil {
-		return reportStatus, nil
-	}
-
-	return thread.status, nil
-}
-
-func (db *Debugger) StepOver() (*ThreadStatus, error) {
-	thread := db.CurrentThread()
-	if db.MainThread().status.Exited {
-		return nil, fmt.Errorf(
-			"failed to step over for thread %d: %w",
-			thread.Tid,
-			ErrProcessExited)
-	}
-
-	err := thread.maybeSwallowInternalSigStop()
-	if err != nil {
-		return nil, err
-	}
-
-	err = thread.stepUntilDifferentLine(true)
-	if err != nil {
-		return nil, err
-	}
-
-	reportStatus := db.focusOnImportantStatus(thread, nil)
-	if reportStatus != nil {
-		return reportStatus, nil
-	}
-
-	return thread.status, nil
-}
-
-func (db *Debugger) StepOut() (*ThreadStatus, error) {
-	thread := db.CurrentThread()
-	if db.MainThread().status.Exited {
-		return nil, fmt.Errorf(
-			"failed to step out for thread %d: %w",
-			thread.Tid,
-			ErrProcessExited)
-	}
-
-	err := thread.maybeSwallowInternalSigStop()
-	if err != nil {
-		return nil, err
-	}
-
-	var returnAddress VirtualAddress
-	frame := thread.CallStack.CurrentFrame()
-	if frame != nil && frame.IsInlined() {
-		// XXX: This is not completely correct since the inlined function may
-		// jump to any address, but is good enough for our purpose.
-		returnAddress = frame.CodeRanges[len(frame.CodeRanges)-1].High
-	} else {
-		state, err := thread.Registers.GetState()
-		if err != nil {
-			return nil, fmt.Errorf(
-				"failed to step out for thread %d: %w",
-				thread.Tid,
-				err)
-		}
-
-		framePointer := VirtualAddress(
-			state.Value(registers.FramePointer).ToUint64())
-
-		addressBytes := make([]byte, 8)
-		n, err := db.VirtualMemory.Read(framePointer+8, addressBytes)
-		if err != nil {
-			return nil, fmt.Errorf(
-				"failed to step out for thread %d: %w",
-				thread.Tid,
-				err)
-		}
-		if n != 8 {
-			panic("should never happen")
-		}
-
-		n, err = binary.Decode(addressBytes, binary.LittleEndian, &returnAddress)
-		if err != nil {
-			return nil, fmt.Errorf(
-				"failed to step out for thread %d: %w",
-				thread.Tid,
-				err)
-		}
-		if n != 8 {
-			panic("should never happen")
-		}
-	}
-
-	err = thread.stepInstruction(true, false)
-	if err != nil {
-		return nil, fmt.Errorf(
-			"failed to step out for thread %d: %w",
-			thread.Tid,
-			err)
-	}
-
-	if thread.status.Stopped &&
-		thread.status.NextInstructionAddress != returnAddress {
-
-		err = thread.resumeUntilAddressOrSignal(returnAddress)
-		if err != nil {
-			return nil, fmt.Errorf(
-				"failed to step out for thread %d: %w",
-				thread.Tid,
-				err)
-		}
-	}
-
-	reportStatus := db.focusOnImportantStatus(thread, nil)
-	if reportStatus != nil {
-		return reportStatus, nil
-	}
-
-	return thread.status, nil
 }
 
 func (db *Debugger) addThread(
@@ -571,13 +422,10 @@ func (db *Debugger) addThread(
 		Tid:          tid,
 		threadTracer: threadTracer,
 		Registers:    registers.New(threadTracer),
-		CallStack: newCallStack(
-			db.LoadedElves,
-			db.VirtualMemory,
-			db.descriptorPool),
-		status:   newRunningStatus(tid),
-		Debugger: db,
+		status:       newRunningStatus(tid),
+		Debugger:     db,
 	}
+	thread.CallStack = newCallStack(thread)
 	db.threads[tid] = thread
 
 	err := thread.updateStatus(waitStatus, true)
@@ -673,6 +521,15 @@ func (db *Debugger) updateSharedLibraries() error {
 
 		db.rendezvousNotifySite = site
 		db.rendezvousAddresses[notifyAddress] = struct{}{}
+	}
+
+	if db.entryPointRendezvousSite != nil {
+		delete(db.rendezvousAddresses, db.LoadedElves.EntryPoint())
+		err := db.entryPointRendezvousSite.Deallocate()
+		if err != nil {
+			return err
+		}
+		db.entryPointRendezvousSite = nil
 	}
 
 	if modified {
@@ -774,7 +631,7 @@ func (db *Debugger) _updateStoppedThreads(
 
 		if thread.status.Stopped {
 			stoppedThreads[tid] = thread
-		} else if thread.Tid != thread.Pid {
+		} else if thread.Tid != db.Pid {
 			err := db.removeThread(tid)
 			if err != nil {
 				return nil, err
@@ -923,111 +780,93 @@ func (db *Debugger) focusOnImportantStatus(
 
 		// arbitrarily pick main thread since it's always available.
 		db.currentTid = db.Pid
-		return db.MainThread().status
+		return db.mainThread().status
 	}
 
-	if !db.MainThread().status.Stopped { // main thread exited / terminated
+	if !db.mainThread().status.Stopped { // main thread exited / terminated
 		db.currentTid = db.Pid
-		return db.MainThread().status
+		return db.mainThread().status
 	}
 
 	return nil
 }
 
-func (db *Debugger) ListLocalVariables() ([]*TypedData, error) {
-	return db.CurrentThread().CallStack.ListLocalVariables()
-}
+func (db *Debugger) ResumeAllUntilSignal() (*ThreadStatus, error) {
+	if db.Exited() {
+		return nil, fmt.Errorf("failed to resume all threads: %w", ErrProcessExited)
+	}
 
-func (db *Debugger) ReadVariable(name string) (*TypedData, error) {
-	return db.CurrentThread().CallStack.ReadVariable(name)
-}
-
-func (db *Debugger) ResolveVariableExpression(
-	expression string,
-) (
-	*TypedData,
-	error,
-) {
-	splitName := func(expr string) (string, string) {
-		idx := strings.IndexAny(expr, ".-[")
-		if idx == -1 {
-			return strings.TrimSpace(expr), ""
+	// Ensure all threads have advance by at least one instruction
+	for _, thread := range db.threads {
+		err := thread.maybeBypassCurrentPCBreakSite()
+		if err != nil {
+			return nil, err
 		}
-		return strings.TrimSpace(expr[:idx]), strings.TrimSpace(expr[idx:])
 	}
 
-	splitIndex := func(expr string) (string, string) {
-		idx := strings.IndexAny(expr, "]")
-		if idx == -1 {
-			return "", strings.TrimSpace(expr)
-		}
-		return strings.TrimSpace(expr[:idx]), strings.TrimSpace(expr[idx+1:])
-	}
-
-	name, remaining := splitName(expression)
-	if len(name) == 0 {
-		return nil, fmt.Errorf("%w. empty variable name", ErrInvalidInput)
-	}
-
-	current, err := db.CurrentThread().CallStack.ReadVariable(name)
+	// Note that the current thread may have been updated by resumeUntilSignal.
+	status, err := db.resumeUntilSignal(nil)
 	if err != nil {
 		return nil, err
 	}
 
-	for len(remaining) > 0 {
-		original := remaining
-		if strings.HasPrefix(remaining, ".") {
-			name, remaining = splitName(remaining[1:])
-			if len(name) == 0 {
-				return nil, fmt.Errorf(
-					"%w. empty member name (%s)",
-					ErrInvalidInput,
-					original)
-			}
+	return status, nil
+}
 
-			current, err = current.FieldByName(name)
-			if err != nil {
-				return nil, fmt.Errorf("invalid operation (%s): %w", original, err)
-			}
-		} else if strings.HasPrefix(remaining, "->") {
-			name, remaining = splitName(remaining[2:])
-			if len(name) == 0 {
-				return nil, fmt.Errorf(
-					"%w. empty member name (%s)",
-					ErrInvalidInput,
-					original)
-			}
+func (db *Debugger) ResumeCurrentUntilSignal() (*ThreadStatus, error) {
+	return db.currentThread().ResumeUntilSignal()
+}
 
-			current, err = current.Dereference()
-			if err != nil {
-				return nil, fmt.Errorf("invalid operation (%s): %w", original, err)
-			}
+func (db *Debugger) StepInstruction() (*ThreadStatus, error) {
+	return db.currentThread().StepInstruction()
+}
 
-			current, err = current.FieldByName(name)
-			if err != nil {
-				return nil, fmt.Errorf("invalid operation (%s): %w", original, err)
-			}
-		} else if strings.HasPrefix(remaining, "[") {
-			var indexStr string
-			indexStr, remaining = splitIndex(remaining[1:])
+func (db *Debugger) StepIn() (*ThreadStatus, error) {
+	return db.currentThread().StepIn()
+}
 
-			index, err := strconv.ParseInt(indexStr, 10, 32)
-			if err != nil {
-				return nil, fmt.Errorf(
-					"%w. invalid index (%s): %s",
-					ErrInvalidInput,
-					original,
-					err)
-			}
+func (db *Debugger) StepOver() (*ThreadStatus, error) {
+	return db.currentThread().StepOver()
+}
 
-			current, err = current.Index(int(index))
-			if err != nil {
-				return nil, fmt.Errorf("invalid operation (%s): %w", original, err)
-			}
-		} else {
-			return nil, fmt.Errorf("invalid operations (%s)", original)
-		}
+func (db *Debugger) StepOut() (*ThreadStatus, error) {
+	return db.currentThread().StepOut()
+}
+
+func (db *Debugger) ResolveVariableExpression(
+	expressionString string,
+) (
+	*expression.EvaluatedResult,
+	error,
+) {
+	value, err := expression.Evaluate(db, expressionString)
+	if err != nil {
+		return nil, err
 	}
 
-	return current, nil
+	if value.ImplicitValue != nil {
+		addr, err := db.InvokeMallocInCurrentThread(value.ByteSize)
+		if err != nil {
+			return nil, err
+		}
+
+		data, err := value.Bytes()
+		if err != nil {
+			return nil, err
+		}
+
+		n, err := db.VirtualMemory.Write(addr, data)
+		if err != nil {
+			return nil, err
+		}
+		if n != len(data) {
+			panic("should never happen")
+		}
+
+		value.Address = addr
+		value.BitSize = value.ByteSize * 8
+		value.ImplicitValue = nil
+	}
+
+	return db.EvaluatedResults.Save(expressionString, value), nil
 }
